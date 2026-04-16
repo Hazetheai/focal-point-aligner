@@ -85,6 +85,7 @@ CURRENT_WIDTH = 700
 MAIN_AREA_HEIGHT = 900
 MAIN_AREA_Y = (DISPLAY_HEIGHT - MAIN_AREA_HEIGHT) // 2
 THUMBNAIL_ROW_HEIGHT = 40
+THUMB_MARGIN = 12
 
 
 class FocalPointAligner:
@@ -131,6 +132,7 @@ class FocalPointAligner:
         self.current_idx = 0
         self.focal_points = {}
         self.completed = set()
+        self.image_dimensions = {}
         
         self.load_focal_points()
         
@@ -187,7 +189,11 @@ class FocalPointAligner:
                         continue
                     for idx, img_file in enumerate(self.image_files):
                         if img_file.name == filename:
-                            self.focal_points[idx] = tuple(coords)
+                            if len(coords) >= 4:
+                                self.focal_points[idx] = (coords[0], coords[1])
+                                self.image_dimensions[idx] = (coords[2], coords[3])
+                            else:
+                                self.focal_points[idx] = tuple(coords)
                             self.completed.add(idx)
                             break
                 
@@ -218,7 +224,11 @@ class FocalPointAligner:
         for idx, focal in self.focal_points.items():
             if idx < len(self.image_files):
                 filename = self.image_files[idx].name
-                data[filename] = list(focal)
+                dims = self.image_dimensions.get(idx)
+                if dims:
+                    data[filename] = [focal[0], focal[1], dims[0], dims[1]]
+                else:
+                    data[filename] = list(focal)
         
         if self.alignment_mode:
             data["alignment_mode"] = self.alignment_mode
@@ -443,10 +453,23 @@ class FocalPointAligner:
                         color = (0, 200, 255)
                         cv2.circle(display, (x_pos, dots_y), dot_radius + 3, color, 3)
                     elif idx in self.focal_points:
-                        color = (0, 255, 100)
+                        focal = self.focal_points[idx]
+                        dims = self.image_dimensions.get(idx)
+                        is_center = False
+                        if dims is not None:
+                            center_x = dims[0] / 2
+                            center_y = dims[1] / 2
+                            if abs(focal[0] - center_x) <= 1 and abs(focal[1] - center_y) <= 1:
+                                is_center = True
+                        
+                        if is_center:
+                            cv2.circle(display, (x_pos, dots_y), dot_radius, (100, 100, 100), -1)
+                            cv2.circle(display, (x_pos, dots_y), 3, (0, 255, 100), -1)
+                        else:
+                            cv2.circle(display, (x_pos, dots_y), dot_radius, (0, 255, 100), -1)
                     else:
                         color = (100, 100, 100)
-                    cv2.circle(display, (x_pos, dots_y), dot_radius, color, -1)
+                        cv2.circle(display, (x_pos, dots_y), dot_radius, color, -1)
                 
                 local_end_x = start_x + len(self._visible_dot_indices) * dot_gap
                 
@@ -468,8 +491,6 @@ class FocalPointAligner:
                     else:
                         color = (150, 150, 150)
                     cv2.circle(display, (x_pos, dots_y), dot_radius, color, -1)
-                
-                self._page_dot_info = (page_start_x, page_dot_gap, page_size, total_pages)
         
         if self.show_aligned:
             return display
@@ -519,43 +540,69 @@ class FocalPointAligner:
         thumb_y = MAIN_AREA_Y + (MAIN_AREA_HEIGHT - THUMB_HEIGHT) // 2
         thumb_overlap = 50
         
+        center_start = (DISPLAY_WIDTH - CURRENT_WIDTH) // 2
+        center_end = center_start + CURRENT_WIDTH
+        
         prev_x = 0
-        next_x = DISPLAY_WIDTH - (THUMB_WIDTH - thumb_overlap)
+        next_x = center_end + THUMB_MARGIN
+        
+        thumb_container_width = next_x - prev_x - THUMB_MARGIN
         
         center_v = MAIN_AREA_Y + MAIN_AREA_HEIGHT // 2
         
         if self.prev_image is not None:
             ph, pw = self.prev_image_shape
-            py_center = center_v - ph // 2
             
-            half_w = pw // 2
-            src_x = half_w
-            display[py_center:py_center + ph, prev_x:prev_x + half_w] = self.prev_image[:, src_x:src_x + half_w]
+            scale_w = thumb_container_width / pw
+            scaled_h = int(ph * scale_w)
+            
+            if scaled_h > THUMB_HEIGHT:
+                scale_h = THUMB_HEIGHT / ph
+                final_scale = min(scale_w, scale_h)
+            else:
+                final_scale = scale_w
+            
+            thumb_resized_h = int(ph * final_scale)
+            thumb_resized_w = int(pw * final_scale)
+            thumb_resized = cv2.resize(self.prev_image, (thumb_resized_w, thumb_resized_h), interpolation=cv2.INTER_LANCZOS4)
+            
+            py_center = center_v - thumb_resized_h // 2
+            display[py_center:py_center + thumb_resized_h, prev_x:prev_x + thumb_resized_w] = thumb_resized
             cv2.putText(display, "PREV", 
                         (10, thumb_y + 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 255, 150), 2)
         else:
-            ph = THUMB_HEIGHT
-            py_center = center_v - ph // 2
-            cv2.rectangle(display, (prev_x, py_center), (prev_x + THUMB_WIDTH // 2, py_center + ph), (35, 35, 35), -1)
+            py_center = center_v - THUMB_HEIGHT // 2
+            cv2.rectangle(display, (prev_x, py_center), (prev_x + thumb_container_width, py_center + THUMB_HEIGHT), (35, 35, 35), -1)
             cv2.putText(display, "FIRST", 
                         (10, center_v + 5), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (70, 70, 70), 2)
         
         if self.next_image is not None:
             nh, nw = self.next_image_shape
-            ny_center = center_v - nh // 2
             
-            half_w = nw // 2
-            display[ny_center:ny_center + nh, next_x:next_x + half_w] = self.next_image[:, :half_w]
+            scale_w = thumb_container_width / nw
+            scaled_h = int(nh * scale_w)
+            
+            if scaled_h > THUMB_HEIGHT:
+                scale_h = THUMB_HEIGHT / nh
+                final_scale = min(scale_w, scale_h)
+            else:
+                final_scale = scale_w
+            
+            thumb_resized_h = int(nh * final_scale)
+            thumb_resized_w = int(nw * final_scale)
+            thumb_resized = cv2.resize(self.next_image, (thumb_resized_w, thumb_resized_h), interpolation=cv2.INTER_LANCZOS4)
+            
+            ny_center = center_v - thumb_resized_h // 2
+            display[ny_center:ny_center + thumb_resized_h, next_x:next_x + thumb_resized_w] = thumb_resized
             cv2.putText(display, "NEXT", 
                         (next_x + 10, thumb_y + 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 255, 150), 2)
         else:
-            nh = THUMB_HEIGHT
-            ny_center = center_v - nh // 2
+            ny_center = center_v - THUMB_HEIGHT // 2
             cv2.rectangle(display, (next_x, ny_center), 
-                         (next_x + THUMB_WIDTH // 2, ny_center + nh), (35, 35, 35), -1)
+                         (next_x + thumb_container_width, ny_center + THUMB_HEIGHT), (35, 35, 35), -1)
             cv2.putText(display, "LAST", 
                         (next_x + 10, center_v + 5), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (70, 70, 70), 2)
@@ -661,10 +708,23 @@ class FocalPointAligner:
                     color = (0, 200, 255)
                     cv2.circle(display, (x_pos, dots_y), dot_radius + 3, color, 3)
                 elif idx in self.focal_points:
-                    color = (0, 255, 100)
+                    focal = self.focal_points[idx]
+                    dims = self.image_dimensions.get(idx)
+                    is_center = False
+                    if dims is not None:
+                        center_x = dims[0] / 2
+                        center_y = dims[1] / 2
+                        if abs(focal[0] - center_x) <= 1 and abs(focal[1] - center_y) <= 1:
+                            is_center = True
+                    
+                    if is_center:
+                        cv2.circle(display, (x_pos, dots_y), dot_radius, (100, 100, 100), -1)
+                        cv2.circle(display, (x_pos, dots_y), 3, (0, 255, 100), -1)
+                    else:
+                        cv2.circle(display, (x_pos, dots_y), dot_radius, (0, 255, 100), -1)
                 else:
                     color = (100, 100, 100)
-                cv2.circle(display, (x_pos, dots_y), dot_radius, color, -1)
+                    cv2.circle(display, (x_pos, dots_y), dot_radius, color, -1)
             
             local_end_x = start_x + len(self._visible_dot_indices) * dot_gap
             
@@ -778,20 +838,42 @@ class FocalPointAligner:
     
     def confirm_and_save(self):
         if self.current_focal is None and self.pending_focal is None:
-            print("No focal point selected - press ENTER again to skip, or click on image to set focal point")
-            return False
+            img = cv2.imread(str(self.image_files[self.current_idx]))
+            if img is not None:
+                h, w = img.shape[:2]
+                self.pending_focal = (w / 2, h / 2)
+                self.image_dimensions[self.current_idx] = (w, h)
+                print(f"No focal point set - using center: ({self.pending_focal[0]:.1f}, {self.pending_focal[1]:.1f})")
+            else:
+                print("Could not load image to determine center")
+                return False
         
         was_already_completed = self.current_idx in self.completed
         old_focal = self.focal_points.get(self.current_idx)
         
         if self.pending_focal is not None:
             save_focal = self.pending_focal
+            save_dims = self.image_dimensions.get(self.current_idx)
         else:
             save_focal = self.current_focal
+            if self.current_idx in self.image_dimensions:
+                save_dims = self.image_dimensions[self.current_idx]
+            else:
+                img = cv2.imread(str(self.image_files[self.current_idx]))
+                if img is not None:
+                    h, w = img.shape[:2]
+                    save_dims = (w, h)
+                    self.image_dimensions[self.current_idx] = save_dims
+                else:
+                    save_dims = None
         
         self.focal_points[self.current_idx] = save_focal
         self.completed.add(self.current_idx)
         self.current_has_saved_focal = True
+        self.current_focal = save_focal
+        
+        if save_dims:
+            self.image_dimensions[self.current_idx] = save_dims
         
         self.pending_focal = None
         self.existing_focal = None
@@ -811,17 +893,17 @@ class FocalPointAligner:
         
         self.save_focal_points()
         
-        if was_already_completed and old_focal != tuple(save_focal):
-            self.show_updated_message()
+        if was_already_completed:
             self.load_current_images()
             self.refresh_display()
             return "stay"
-        elif self.current_idx < len(self.image_files) - 1:
-            self.current_idx += 1
-            self.load_current_images()
-            return True
         else:
-            return "stay"
+            if self.current_idx < len(self.image_files) - 1:
+                self.current_idx += 1
+            self.load_current_images()
+            self.refresh_display()
+            print(f"Saved. Moved to image {self.current_idx + 1} | {len(self.completed)}/{len(self.image_files)} done")
+            return True
     
     def show_updated_message(self):
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
@@ -884,19 +966,15 @@ class FocalPointAligner:
             del self.focal_points[self.current_idx]
             self.completed.remove(self.current_idx)
             self.save_focal_points()
-            print(f"Deleted focal point for image {self.current_idx + 1}")
+            print(f"Cleared focal point for image {self.current_idx + 1}")
         
         self.current_focal = None
         self.current_has_saved_focal = False
         self.display_image = self.base_display_image.copy()
         
-        if self.current_idx > 0:
-            self.current_idx -= 1
-            self.load_current_images()
-            return True
-        else:
-            self.load_current_images()
-            return True
+        self.load_current_images()
+        self.refresh_display()
+        return True
     
     def discard_current(self):
         current_file = self.image_files[self.current_idx]
@@ -976,6 +1054,49 @@ class FocalPointAligner:
         self.current_focal = None
         self.current_has_saved_focal = False
         self.display_image = self.base_display_image.copy()
+    
+    def reset_all(self):
+        print("\n" + "=" * 50)
+        print("RESET ALL FOCAL POINTS")
+        print(f"Current progress: {len(self.completed)} / {len(self.image_files)}")
+        print("This will also delete all preview aligned images.")
+        print("This cannot be undone.")
+        print("=" * 50)
+        print("Confirm (y/n): ", end="", flush=True)
+        
+        try:
+            choice = input().strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled.")
+            return
+        
+        if choice != 'y':
+            print("Cancelled.")
+            return
+        
+        import shutil
+        
+        for idx in list(self.focal_points.keys()):
+            del self.focal_points[idx]
+        self.completed.clear()
+        
+        if self.json_path.exists():
+            self.json_path.unlink()
+        
+        for orientation in ['landscape', 'portrait']:
+            preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{orientation}"
+            if preview_folder.exists():
+                shutil.rmtree(preview_folder)
+        
+        self.current_idx = 0
+        self.current_focal = None
+        self.pending_focal = None
+        self.existing_focal = None
+        self.alignment_mode = None
+        
+        self.load_current_images()
+        self.refresh_display()
+        print("All focal points and previews have been reset.")
     
     def navigate(self, direction):
         new_idx = self.current_idx + direction
@@ -1154,9 +1275,7 @@ class FocalPointAligner:
             elif key == 88 or key == 120:
                 self.discard_current()
             elif key == 82 or key == 114:
-                self.reset_current()
-                print(f"Reset focal point for image {self.current_idx + 1}")
-                self.refresh_display()
+                self.reset_all()
             elif key in (81, 113, 123, 2424832):
                 self.navigate_wrap(-1)
                 print(f"Navigated to image {self.current_idx + 1}")
@@ -1325,23 +1444,26 @@ class FocalPointAligner:
         h, w = img.shape[:2]
         focal_x, focal_y = focal
         
-        crop_x, crop_y, scale, crop_w, crop_h = calculate_transformation(
-            focal_x, focal_y, w, h, target_w, target_h
-        )
-        
-        scaled_w = int(w * scale)
-        scaled_h = int(h * scale)
-        scaled = cv2.resize(img, (scaled_w, scaled_h), interpolation=cv2.INTER_LANCZOS4)
-        
-        src_x = max(0, int(crop_x))
-        src_y = max(0, int(crop_y))
-        src_w = min(crop_w, scaled_w - src_x)
-        src_h = min(crop_h, scaled_h - src_y)
-        
-        aligned = scaled[src_y:src_y + src_h, src_x:src_x + src_w]
-        
-        if aligned.shape[0] != crop_h or aligned.shape[1] != crop_w:
-            aligned = cv2.resize(aligned, (crop_w, crop_h), interpolation=cv2.INTER_LANCZOS4)
+        if abs(focal_x - w / 2) <= 1 and abs(focal_y - h / 2) <= 1:
+            aligned = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+        else:
+            crop_x, crop_y, scale, crop_w, crop_h = calculate_transformation(
+                focal_x, focal_y, w, h, target_w, target_h
+            )
+            
+            scaled_w = int(w * scale)
+            scaled_h = int(h * scale)
+            scaled = cv2.resize(img, (scaled_w, scaled_h), interpolation=cv2.INTER_LANCZOS4)
+            
+            src_x = max(0, int(crop_x))
+            src_y = max(0, int(crop_y))
+            src_w = min(crop_w, scaled_w - src_x)
+            src_h = min(crop_h, scaled_h - src_y)
+            
+            aligned = scaled[src_y:src_y + src_h, src_x:src_x + src_w]
+            
+            if aligned.shape[0] != crop_h or aligned.shape[1] != crop_w:
+                aligned = cv2.resize(aligned, (crop_w, crop_h), interpolation=cv2.INTER_LANCZOS4)
         
         output_name = f"{idx + 1:04d}.jpg"
         output_path = self.preview_folder / output_name
