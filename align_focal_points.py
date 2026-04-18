@@ -89,10 +89,28 @@ THUMB_MARGIN = 12
 
 
 class FocalPointAligner:
-    def __init__(self, input_folder, output_folder):
-        self.input_folder = Path(input_folder)
-        self.output_folder = Path(output_folder)
+    def __init__(self, config: dict = None):
+        """
+        Initialize the Focal Point Aligner.
+        
+        Args:
+            config: Dictionary containing:
+                - input_folder: Path to input images
+                - output_folder: Path for output (optional, defaults to input_aligned)
+                - target_width: Target width for aligned images (optional, default 2560)
+                - target_height: Target height for aligned images (optional, default 1440)
+        """
+        if config is None:
+            config = {}
+        
+        self.input_folder = Path(config.get('input_folder', '.'))
+        
+        default_output = self.input_folder.parent / f"{self.input_folder.name}_aligned"
+        self.output_folder = Path(config.get('output_folder', default_output))
         self.output_folder.mkdir(parents=True, exist_ok=True)
+        
+        self.target_width = config.get('target_width', 2560)
+        self.target_height = config.get('target_height', 1440)
         
         self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview"
         
@@ -127,7 +145,7 @@ class FocalPointAligner:
         ])
         
         if not self.image_files:
-            raise ValueError(f"No images found in {input_folder}")
+            raise ValueError(f"No images found in {self.input_folder}")
         
         self.current_idx = 0
         self.focal_points = {}
@@ -1201,6 +1219,36 @@ class FocalPointAligner:
                 return result
             elif result == "quit":
                 return result
+    
+    def get_stats(self):
+        """Return statistics about the current session"""
+        total = len(self.image_files)
+        with_focal = len(self.focal_points)
+        
+        # Count center focal points
+        center_count = 0
+        for idx, focal in self.focal_points.items():
+            dims = self.image_dimensions.get(idx)
+            if dims:
+                center_x = dims[0] / 2
+                center_y = dims[1] / 2
+                if abs(focal[0] - center_x) <= 1 and abs(focal[1] - center_y) <= 1:
+                    center_count += 1
+        
+        return {
+            'total': total,
+            'with_focal': with_focal,
+            'center_focal': center_count,
+            'without_focal': total - with_focal,
+            'input_folder': str(self.input_folder),
+            'output_folder': str(self.output_folder),
+            'target_width': self.target_width,
+            'target_height': self.target_height,
+        }
+    
+    def is_complete(self):
+        """Check if all images have focal points"""
+        return len(self.completed) == len(self.image_files)
     
     def run_main_loop(self):
         last_nav_time = 0
