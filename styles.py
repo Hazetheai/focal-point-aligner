@@ -2,7 +2,18 @@
 Shared styles and colors for the Focal Point Aligner GUI
 """
 
+import platform
 from PyQt6.QtGui import QColor, QPalette, QFont
+
+def get_system_font():
+    """Get a font appropriate for the current platform."""
+    system = platform.system()
+    if system == 'Darwin':  # macOS
+        return 'SF Pro Text'
+    elif system == 'Windows':
+        return 'Segoe UI'
+    else:  # Linux and others
+        return 'Ubuntu'
 
 # Color palette
 COLORS = {
@@ -21,15 +32,19 @@ COLORS = {
     'accent': '#3498DB',          # Light blue accent
 }
 
-# Font definitions
-FONTS = {
-    'title': QFont('Segoe UI', 24, QFont.Weight.Bold),
-    'subtitle': QFont('Segoe UI', 18, QFont.Weight.DemiBold),
-    'body': QFont('Segoe UI', 12),
-    'body_bold': QFont('Segoe UI', 12, QFont.Weight.Bold),
-    'button': QFont('Segoe UI', 12, QFont.Weight.Medium),
-    'small': QFont('Segoe UI', 10),
-}
+# Font definitions - use system-appropriate font
+def _get_fonts():
+    font_family = get_system_font()
+    return {
+        'title': QFont(font_family, 24, QFont.Weight.Bold),
+        'subtitle': QFont(font_family, 18, QFont.Weight.DemiBold),
+        'body': QFont(font_family, 12),
+        'body_bold': QFont(font_family, 12, QFont.Weight.Bold),
+        'button': QFont(font_family, 12, QFont.Weight.Medium),
+        'small': QFont(font_family, 10),
+    }
+
+FONTS = _get_fonts()
 
 # Spacing constants
 SPACING = {

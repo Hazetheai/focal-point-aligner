@@ -3,7 +3,19 @@
 Main entry point for the Focal Point Aligner GUI application.
 """
 
+import os
+import platform
 import sys
+
+# Set Qt platform plugin before Qt is imported
+if 'QT_QPA_PLATFORM' not in os.environ:
+    system = platform.system()
+    if system == 'Darwin':
+        os.environ['QT_QPA_PLATFORM'] = 'cocoa'
+    elif system == 'Windows':
+        os.environ['QT_QPA_PLATFORM'] = 'windows'
+    else:
+        os.environ['QT_QPA_PLATFORM'] = 'xcb'
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import Qt
