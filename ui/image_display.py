@@ -7,10 +7,9 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from PyQt6.QtWidgets import QLabel
+from PyQt6.QtWidgets import QLabel, QSizePolicy
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QCursor, QFont
-from PyQt6.QtWidgets import QSizePolicy
 
 import cv2
 import numpy as np
@@ -39,10 +38,11 @@ class ImageDisplayWidget(QLabel):
         self._original_pixmap = None
         self._focal_point = None
         self._pending_focal = None
-        self._display_scale = 1.0
-        self._image_offset = QPointF(0, 0)
+        
         self._original_width = 0
         self._original_height = 0
+        
+        self._displayed_pixmap_rect = None
         
         self.setStyleSheet("""
             ImageDisplayWidget {
@@ -54,10 +54,14 @@ class ImageDisplayWidget(QLabel):
     
     def set_image(self, cv_image):
         """Set the image to display (OpenCV format: BGR numpy array)."""
+        logger.info(f"ImageDisplayWidget.set_image: image={'not None' if cv_image is not None else 'None'}")
+        
         if cv_image is None:
             self._image = None
             self._pixmap = None
             self._original_pixmap = None
+            self._displayed_pixmap_rect = None
+            self.clear()
             self.setText("No Image")
             return
         
@@ -65,17 +69,23 @@ class ImageDisplayWidget(QLabel):
         
         h, w = cv_image.shape[:2]
         if h == 0 or w == 0:
+            logger.warning(f"ImageDisplayWidget.set_image: Invalid image size {w}x{h}")
             return
+        
+        logger.info(f"ImageDisplayWidget.set_image: original image size={w}x{h}")
         
         self._original_width = w
         self._original_height = h
         
-        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB).copy()
-        qimage = QImage(rgb_image.data, w, h, w * 3, QImage.Format.Format_RGB888)
-        self._original_pixmap = QPixmap.fromImage(qimage)
+        rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
+        rgb_h, rgb_w = rgb_image.shape[:2]
+        
+        qimage = QImage(rgb_image.data, rgb_w, rgb_h, rgb_w * 3, QImage.Format.Format_RGB888)
+        
+        self._original_pixmap = QPixmap.fromImage(qimage.copy())
         self._pixmap = self._original_pixmap
         
-        logger.debug(f"ImageDisplayWidget: Loaded image {w}x{h}")
+        logger.info(f"ImageDisplayWidget.set_image: created pixmap {self._pixmap.width()}x{self._pixmap.height()}")
         
         self._update_display()
     
@@ -89,36 +99,50 @@ class ImageDisplayWidget(QLabel):
         self._update_display()
     
     def _update_display(self):
-        """Update the displayed pixmap with proper scaling."""
+        """Update the displayed pixmap - maintains aspect ratio with padding."""
         if self._pixmap is None:
             return
         
-        available_width = self.width() - 4
-        available_height = self.height() - 4
+        widget_w = self.width()
+        widget_h = self.height()
         
-        pix_w = self._pixmap.width()
-        pix_h = self._pixmap.height()
+        logger.info(f"ImageDisplayWidget._update_display: widget={widget_w}x{widget_h}")
         
-        if pix_w == 0 or pix_h == 0:
+        padding = 20
+        available_width = widget_w - (padding * 2)
+        available_height = widget_h - (padding * 2)
+        
+        logger.info(f"ImageDisplayWidget._update_display: padding={padding}, available={available_width}x{available_height}")
+        
+        if available_width <= 0 or available_height <= 0:
+            logger.warning(f"ImageDisplayWidget._update_display: No available space")
             return
         
-        scale_w = available_width / pix_w
-        scale_h = available_height / pix_h
-        self._display_scale = min(scale_w, scale_h)
+        orig_w = self._pixmap.width()
+        orig_h = self._pixmap.height()
         
-        scaled_w = int(pix_w * self._display_scale)
-        scaled_h = int(pix_h * self._display_scale)
+        logger.info(f"ImageDisplayWidget._update_display: original pixmap={orig_w}x{orig_h}")
         
-        scaled_pixmap = self._pixmap.scaled(scaled_w, scaled_h, 
+        if orig_w == 0 or orig_h == 0:
+            return
+        
+        scaled_pixmap = self._pixmap.scaled(available_width, available_height, 
                                             Qt.AspectRatioMode.KeepAspectRatio,
                                             Qt.TransformationMode.SmoothTransformation)
         
-        self._image_offset = QPointF(
-            (available_width - scaled_w) / 2,
-            (available_height - scaled_h) / 2
-        )
+        scaled_w = scaled_pixmap.width()
+        scaled_h = scaled_pixmap.height()
+        
+        logger.info(f"ImageDisplayWidget._update_display: scaled pixmap={scaled_w}x{scaled_h}")
         
         self.setPixmap(scaled_pixmap)
+        
+        img_x = padding + (available_width - scaled_w) / 2
+        img_y = padding + (available_height - scaled_h) / 2
+        
+        self._displayed_pixmap_rect = (int(img_x), int(img_y), scaled_w, scaled_h)
+        
+        logger.info(f"ImageDisplayWidget._update_display: image_rect={self._displayed_pixmap_rect}, orig={orig_w}x{orig_h}")
     
     def set_focal_point(self, x, y, is_pending=False):
         """Set the focal point to display (in original image coordinates)."""
@@ -128,7 +152,7 @@ class ImageDisplayWidget(QLabel):
         else:
             self._focal_point = (float(x), float(y))
             self._pending_focal = None
-        self.update()  # Trigger repaint to show focal point marker
+        self.update()
     
     def clear_focal_point(self):
         """Clear the focal point."""
@@ -137,54 +161,57 @@ class ImageDisplayWidget(QLabel):
     
     def get_click_position(self, event):
         """Convert widget click position to original image coordinates."""
-        if self._pixmap is None or self._display_scale == 0:
-            logger.warning("ImageDisplayWidget: _pixmap is None or _display_scale is 0")
+        if self._pixmap is None or self._displayed_pixmap_rect is None:
+            logger.warning("ImageDisplayWidget.get_click_position: pixmap or rect is None")
             return None
         
-        pix_w = self._pixmap.width()
-        pix_h = self._pixmap.height()
+        img_x, img_y, disp_w, disp_h = self._displayed_pixmap_rect
+        orig_w = self._pixmap.width()
+        orig_h = self._pixmap.height()
         
-        logger.debug(f"ImageDisplayWidget: Original image size={pix_w}x{pix_h}, display_scale={self._display_scale}")
+        click_x = event.position().x()
+        click_y = event.position().y()
         
-        scaled_w = int(pix_w * self._display_scale)
-        scaled_h = int(pix_h * self._display_scale)
+        logger.info(f"ImageDisplayWidget.get_click_position: click=({click_x:.1f}, {click_y:.1f}), image_rect=({img_x}, {img_y}, {disp_w}, {disp_h}), original=({orig_w}, {orig_h})")
         
-        offset_x = self._image_offset.x()
-        offset_y = self._image_offset.y()
+        local_x = click_x - img_x
+        local_y = click_y - img_y
         
-        logger.debug(f"ImageDisplayWidget: Scaled size={scaled_w}x{scaled_h}, offset=({offset_x}, {offset_y})")
-        logger.debug(f"ImageDisplayWidget: Click local=({event.position().x()}, {event.position().y()})")
+        logger.info(f"ImageDisplayWidget.get_click_position: local=({local_x:.1f}, {local_y:.1f})")
         
-        local_x = event.position().x() - offset_x
-        local_y = event.position().y() - offset_y
-        
-        if local_x < 0 or local_x > scaled_w or local_y < 0 or local_y > scaled_h:
-            logger.warning(f"ImageDisplayWidget: Click outside image bounds")
+        if local_x < 0 or local_x > disp_w or local_y < 0 or local_y > disp_h:
+            logger.warning(f"ImageDisplayWidget.get_click_position: Click outside image bounds")
             return None
         
-        img_x = local_x / self._display_scale
-        img_y = local_y / self._display_scale
+        scale_x = orig_w / disp_w if disp_w > 0 else 1.0
+        scale_y = orig_h / disp_h if disp_h > 0 else 1.0
         
-        img_x = max(0, min(pix_w - 1, img_x))
-        img_y = max(0, min(pix_h - 1, img_y))
+        logger.info(f"ImageDisplayWidget.get_click_position: scale=({scale_x:.4f}, {scale_y:.4f})")
         
-        logger.debug(f"ImageDisplayWidget: Converted to original coords=({img_x}, {img_y})")
+        result_x = local_x * scale_x
+        result_y = local_y * scale_y
         
-        return (img_x, img_y)
+        result_x = max(0, min(orig_w - 1, result_x))
+        result_y = max(0, min(orig_h - 1, result_y))
+        
+        logger.info(f"ImageDisplayWidget.get_click_position: result=({result_x:.1f}, {result_y:.1f})")
+        
+        return (result_x, result_y)
     
     def mousePressEvent(self, event):
         """Handle mouse click to set focal point."""
-        logger.debug(f"ImageDisplayWidget: mousePressEvent called, button={event.button()}")
+        logger.info(f"ImageDisplayWidget.mousePressEvent: button={event.button()}, pos=({event.position().x():.1f}, {event.position().y():.1f})")
+        logger.info(f"ImageDisplayWidget.mousePressEvent: displayed_rect={self._displayed_pixmap_rect}")
         
         if event.button() == Qt.MouseButton.LeftButton:
             pos = self.get_click_position(event)
-            logger.debug(f"ImageDisplayWidget: Click position = {pos}")
+            logger.info(f"ImageDisplayWidget.mousePressEvent: converted position = {pos}")
             
             if pos is not None:
-                logger.info(f"ImageDisplayWidget: Emitting focal_point_clicked signal with ({pos[0]:.1f}, {pos[1]:.1f})")
+                logger.info(f"ImageDisplayWidget.mousePressEvent: Emitting focal_point_clicked with ({pos[0]:.1f}, {pos[1]:.1f})")
                 self.focal_point_clicked.emit(pos[0], pos[1])
             else:
-                logger.warning("ImageDisplayWidget: Click position is None (outside image area)")
+                logger.warning("ImageDisplayWidget.mousePressEvent: Click position is None (outside image area)")
         
         super().mousePressEvent(event)
     
@@ -202,11 +229,13 @@ class ImageDisplayWidget(QLabel):
         if scaled_pixmap is None:
             return
         
-        pixmap_rect = scaled_pixmap.rect()
-        pixmap_x = pixmap_rect.x()
-        pixmap_y = pixmap_rect.y()
+        orig_w = self._pixmap.width()
+        orig_h = self._pixmap.height()
         
-        scale = self._display_scale
+        scale_x = scaled_pixmap.width() / orig_w if orig_w > 0 else 1.0
+        scale_y = scaled_pixmap.height() / orig_h if orig_h > 0 else 1.0
+        
+        logger.info(f"ImageDisplayWidget.paintEvent: scaled={scaled_pixmap.width()}x{scaled_pixmap.height()}, original={orig_w}x{orig_h}, scale=({scale_x:.4f}, {scale_y:.4f})")
         
         focal_to_draw = None
         color = None
@@ -214,15 +243,25 @@ class ImageDisplayWidget(QLabel):
         if self._pending_focal is not None:
             focal_to_draw = self._pending_focal
             color = QColor(255, 150, 0)
-            logger.debug(f"ImageDisplayWidget: Drawing PENDING focal at {focal_to_draw}")
+            logger.info(f"ImageDisplayWidget.paintEvent: Drawing PENDING focal at {focal_to_draw}")
         elif self._focal_point is not None:
             focal_to_draw = self._focal_point
             color = QColor(0, 255, 100)
-            logger.debug(f"ImageDisplayWidget: Drawing SAVED focal at {focal_to_draw}")
+            logger.info(f"ImageDisplayWidget.paintEvent: Drawing SAVED focal at {focal_to_draw}")
         
         if focal_to_draw is not None and color is not None:
-            disp_x = pixmap_x + focal_to_draw[0] * scale
-            disp_y = pixmap_y + focal_to_draw[1] * scale
+            if self._displayed_pixmap_rect is not None:
+                img_x, img_y, disp_w, disp_h = self._displayed_pixmap_rect
+                
+                disp_x = img_x + focal_to_draw[0] * scale_x
+                disp_y = img_y + focal_to_draw[1] * scale_y
+                
+                logger.info(f"ImageDisplayWidget.paintEvent: Using displayed_rect=({img_x}, {img_y}, {disp_w}, {disp_h}), focal=({focal_to_draw[0]:.1f}, {focal_to_draw[1]:.1f})")
+                logger.info(f"ImageDisplayWidget.paintEvent: Drawing at display=({disp_x:.1f}, {disp_y:.1f})")
+            else:
+                disp_x = focal_to_draw[0] * scale_x
+                disp_y = focal_to_draw[1] * scale_y
+                logger.warning(f"ImageDisplayWidget.paintEvent: No displayed_pixmap_rect, using fallback position ({disp_x:.1f}, {disp_y:.1f})")
             
             painter.setPen(QPen(color, 3))
             
@@ -232,5 +271,3 @@ class ImageDisplayWidget(QLabel):
             line_len = 20
             painter.drawLine(int(disp_x - line_len), int(disp_y), int(disp_x + line_len), int(disp_y))
             painter.drawLine(int(disp_x), int(disp_y - line_len), int(disp_x), int(disp_y + line_len))
-            
-            logger.debug(f"ImageDisplayWidget: Drew focal marker at display ({disp_x:.1f}, {disp_y:.1f})")

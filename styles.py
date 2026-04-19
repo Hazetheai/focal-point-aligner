@@ -96,6 +96,77 @@ QPushButton:hover {{
 }}
 """
 
+# Toolbar button styles
+BUTTON_TOOLBAR = f"""
+QPushButton {{
+    background-color: #3D3D54;
+    color: #FFFFFF;
+    border: 1px solid #4D4D64;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+}}
+QPushButton:hover {{
+    background-color: #4D4D64;
+}}
+"""
+
+BUTTON_TOOLBAR_RED = f"""
+QPushButton {{
+    background-color: #6D3030;
+    color: #FFFFFF;
+    border: 1px solid #8D4040;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+}}
+QPushButton:hover {{
+    background-color: #8D4040;
+}}
+"""
+
+BUTTON_TOOLBAR_BLUE = f"""
+QPushButton {{
+    background-color: #30306D;
+    color: #FFFFFF;
+    border: 1px solid #40408D;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+}}
+QPushButton:hover {{
+    background-color: #40408D;
+}}
+"""
+
+BUTTON_TOOLBAR_YELLOW = f"""
+QPushButton {{
+    background-color: #6D6D30;
+    color: #FFFFFF;
+    border: 1px solid #8D8D40;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+}}
+QPushButton:hover {{
+    background-color: #8D8D40;
+}}
+"""
+
+BUTTON_TOOLBAR_GRAY = f"""
+QPushButton {{
+    background-color: #4D4D54;
+    color: #FFFFFF;
+    border: 1px solid #5D5D64;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 12px;
+}}
+QPushButton:hover {{
+    background-color: #5D5D64;
+}}
+"""
+
 # Input field style
 INPUT_FIELD = f"""
 QLineEdit {{
@@ -103,8 +174,11 @@ QLineEdit {{
     color: {COLORS['text_primary']};
     border: 1px solid {COLORS['border']};
     border-radius: 6px;
-    padding: 10px 12px;
+    padding: 12px 16px;
     font: {FONTS['body'].family()} {FONTS['body'].pointSize()}pt;
+}}
+QLineEdit::placeholder {{
+    color: {COLORS['text_secondary']};
 }}
 QLineEdit:focus {{
     border-color: {COLORS['primary']};
@@ -122,7 +196,7 @@ QSpinBox, QDoubleSpinBox {{
     color: {COLORS['text_primary']};
     border: 1px solid {COLORS['border']};
     border-radius: 6px;
-    padding: 8px 12px;
+    padding: 10px 16px;
 }}
 QSpinBox:focus, QDoubleSpinBox:focus {{
     border-color: {COLORS['primary']};
@@ -143,6 +217,15 @@ QWidget {{
     background-color: {COLORS['surface']};
     border-radius: 12px;
     border: 1px solid {COLORS['border']};
+    padding: 16px;
+}}
+QGroupBox {{
+    margin-top: 20px;
+    padding: 16px;
+}}
+QGroupBox::title {{
+    padding-left: 8px;
+    padding-top: 8px;
 }}
 """
 
@@ -151,6 +234,7 @@ LABEL_STYLE = f"""
 QLabel {{
     color: {COLORS['text_secondary']};
     font: {FONTS['body'].family()} {FONTS['body'].pointSize()}pt;
+    padding: 4px 0px 4px 4px;
 }}
 """
 

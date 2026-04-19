@@ -3,6 +3,7 @@ Opening screen for the Focal Point Aligner GUI.
 Allows users to select input folder, output folder, target size, and presets.
 """
 
+import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -15,6 +16,9 @@ from PyQt6.QtCore import Qt, pyqtSignal
 import styles
 
 
+CONFIG_FILE = Path(__file__).parent.parent / "config.json"
+
+
 class OpenerScreen(QWidget):
     """Opening screen for folder selection and configuration."""
     
@@ -23,11 +27,48 @@ class OpenerScreen(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.init_ui()
+        self._load_config()
+        self._build_ui()
+        
+        # Restore persisted settings after widgets exist
+        last_input = self._config.get('last_input_dir', '')
+        last_output = self._config.get('last_output_dir', '')
+        if last_input and Path(last_input).exists():
+            self.input_path.setText(last_input)
+        if last_output and Path(last_output).exists():
+            self.output_path.setText(last_output)
+        self.width_spin.setValue(self._config.get('target_width', 2560))
+        self.height_spin.setValue(self._config.get('target_height', 1440))
     
-    def init_ui(self):
+    def _load_config(self):
+        """Load persisted settings from config file."""
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    self._config = json.load(f)
+            except Exception:
+                self._config = {}
+        else:
+            self._config = {}
+    
+    def _save_config(self):
+        """Save current settings to config file."""
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(self._config, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save config: {e}")
+    
+    def _build_ui(self):
         self.setWindowTitle("Focal Point Aligner")
-        self.setMinimumSize(700, 600)
+        
+        # Get the screen geometry and size to 90% of available screen
+        screen = self.screen()
+        if screen:
+            screen_geometry = screen.availableGeometry()
+            new_width = int(screen_geometry.width() * 0.9)
+            new_height = int(screen_geometry.height() * 0.9)
+            self.resize(new_width, new_height)
         
         # Apply palette
         self.setPalette(styles.get_palette())
@@ -75,7 +116,7 @@ class OpenerScreen(QWidget):
         layout.addWidget(input_group)
         
         # Target size section
-        size_group = QGroupBox("Target Size")
+        size_group = QGroupBox("Target Dimensions")
         size_group.setStyleSheet(styles.CARD_STYLE)
         size_layout = QGridLayout()
         size_layout.setSpacing(styles.SPACING['md'])
@@ -183,6 +224,13 @@ class OpenerScreen(QWidget):
         self.height_spin.setValue(height)
     
     def on_start_clicked(self):
+        # Save config before starting
+        self._config['last_input_dir'] = self.input_path.text().strip()
+        self._config['last_output_dir'] = self.output_path.text().strip()
+        self._config['target_width'] = self.width_spin.value()
+        self._config['target_height'] = self.height_spin.value()
+        self._save_config()
+        
         # Validate inputs
         input_folder = self.input_path.text().strip()
         

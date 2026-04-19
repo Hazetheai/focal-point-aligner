@@ -10,7 +10,6 @@ from PyQt6.QtCore import Qt
 
 import styles
 from ui.opener_screen import OpenerScreen
-from ui.closer_screen import CloserScreen
 from ui.aligner_screen import AlignerScreen
 from ui.logger import logger
 
@@ -49,25 +48,19 @@ class FocalPointAlignerApp(QApplication):
         self.aligner_screen.show()
     
     def on_aligner_finished(self, stats: dict):
-        """Handle aligner completion."""
+        """Handle aligner completion - just quit directly."""
         if self.aligner_screen:
             self.aligner_screen.hide()
             self.aligner_screen = None
-        
-        self.closer = CloserScreen(stats)
-        self.closer.new_batch_clicked.connect(self.on_new_batch)
-        self.closer.exit_clicked.connect(self.quit)
-        self.closer.show()
+        self.quit()
     
     def on_new_batch(self):
-        """Handle new batch button from closer."""
-        if self.closer:
-            self.closer.hide()
-            self.closer = None
+        """Handle new batch button."""
+        if self.opener:
+            self.opener.hide()
         
-        if not self.opener:
-            self.opener = OpenerScreen()
-            self.opener.start_clicked.connect(self.on_start_clicked)
+        self.opener = OpenerScreen()
+        self.opener.start_clicked.connect(self.on_start_clicked)
         self.opener.show()
 
 

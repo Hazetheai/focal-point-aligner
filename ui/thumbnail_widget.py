@@ -46,6 +46,7 @@ class ThumbnailWidget(QLabel):
         
         if cv_image is None:
             self._pixmap = None
+            self.clear()
             self.setText(self.label_text)
             self.setStyleSheet("""
                 QLabel {
@@ -56,6 +57,7 @@ class ThumbnailWidget(QLabel):
                     font-size: 14px;
                 }
             """)
+            self.update()
             return
         
         h, w = cv_image.shape[:2]
@@ -77,13 +79,14 @@ class ThumbnailWidget(QLabel):
         self._update_display()
     
     def _update_display(self):
-        """Update the displayed pixmap to fill the available widget space."""
+        """Update the displayed pixmap to fit within the widget while maintaining aspect ratio."""
         if self._pixmap is None:
             return
         
-        # Use actual widget dimensions instead of fixed values
-        available_width = self.width()
-        available_height = self.height()
+        # Add padding around the image (10px on each side)
+        padding = 10
+        available_width = self.width() - (padding * 2)
+        available_height = self.height() - (padding * 2)
         
         if available_width <= 0 or available_height <= 0:
             return
@@ -94,14 +97,8 @@ class ThumbnailWidget(QLabel):
         if pix_w == 0 or pix_h == 0:
             return
         
-        scale_w = available_width / pix_w
-        scale_h = available_height / pix_h
-        scale = min(scale_w, scale_h)
-        
-        scaled_w = int(pix_w * scale)
-        scaled_h = int(pix_h * scale)
-        
-        scaled_pixmap = self._pixmap.scaled(scaled_w, scaled_h,
+        # Simple scale to fit within available space while maintaining aspect ratio
+        scaled_pixmap = self._pixmap.scaled(available_width, available_height,
                                             Qt.AspectRatioMode.KeepAspectRatio,
                                             Qt.TransformationMode.SmoothTransformation)
         
@@ -109,7 +106,7 @@ class ThumbnailWidget(QLabel):
             painter = QPainter(scaled_pixmap)
             painter.setPen(QPen(QColor(0, 255, 100), 3))
             painter.setBrush(QColor(0, 255, 100))
-            cx, cy = scaled_w // 2, scaled_h // 2
+            cx, cy = scaled_pixmap.width() // 2, scaled_pixmap.height() // 2
             painter.drawEllipse(cx - 8, cy - 8, 16, 16)
             painter.end()
         
