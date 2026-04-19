@@ -9,4 +9,5 @@ test_images/
 test_images_aligned/
 test_images_aligned_preview_landscape/
 test_images_aligned_preview_portrait/
-*.DS_Store
+*.DS_Storebuild/
+dist/

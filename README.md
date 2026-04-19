@@ -10,20 +10,46 @@ A PyQt6-based GUI tool for aligning images based on user-defined focal points.
 - **Directory Persistence**: Remembers last used input/output directories
 - **Keyboard Shortcuts**: Full keyboard navigation support
 - **Batch Processing**: Efficiently process large sets of images
+- **Cross-Platform**: Works on macOS, Windows, and Linux
+
+## Requirements
+
+- Python 3.11+
+- PyQt6 6.9+
+- opencv-python 4.13+
+- pillow 12.0+
+- numpy 2.0+
 
 ## Installation
 
+### Using Conda
+
 ```bash
-conda create -n image-morph python=3.11
-conda activate image-morph
-pip install PyQt6 opencv-python pillow numpy
+# Create a new conda environment
+conda create -n focal-align python=3.11
+conda activate focal-align
+
+# Install dependencies
+pip install PyQt6>=6.9.0 opencv-python>=4.13.0 pillow>=12.0.0 numpy>=2.0.0
+```
+
+### Using pip (with existing Python)
+
+```bash
+pip install PyQt6>=6.9.0 opencv-python>=4.13.0 pillow>=12.0.0 numpy>=2.0.0
 ```
 
 ## Usage
 
 ```bash
-conda run -n image-morph env QT_QPA_PLATFORM_PLUGIN_PATH=/opt/miniconda3/envs/image-morph/lib/qt6/plugins/platforms python FocalPointAligner/main.py
+# Activate environment (if using conda)
+conda activate focal-align
+
+# Run the application
+python FocalPointAligner/main.py
 ```
+
+On first run, macOS may show a warning about "unidentified developer". To bypass: right-click the app and select "Open".
 
 ## Keyboard Shortcuts
 
@@ -47,15 +73,17 @@ FocalPointAligner/
 ├── main.py                 # Application entry point
 ├── aligner_core.py         # Core alignment logic
 ├── styles.py               # UI styling constants
+├── requirements.txt        # Python dependencies
 ├── ui/
 │   ├── aligner_screen.py   # Main aligner UI
-│   ├── end_menu.py         # Export dialog
-│   ├── navigation_dots.py  # Navigation dots widget
-│   ├── image_display.py    # Image display widget
-│   ├── opener_screen.py    # Folder selection screen
-│   ├── thumbnail_widget.py # Thumbnail display
-│   └── logger.py           # Logging utilities
-└── config.json             # Configuration (generated)
+│   ├── end_menu.py        # Export dialog
+│   ├── navigation_dots.py # Navigation dots widget
+│   ├── image_display.py   # Image display widget
+│   ├── opener_screen.py   # Folder selection screen
+│   ├── thumbnail_widget.py# Thumbnail display
+│   └── logger.py          # Logging utilities
+├── FocalPointAligner.spec  # PyInstaller build config (macOS)
+└── build_macos.sh          # Build script for macOS .app
 ```
 
 ## Workflow
@@ -70,6 +98,24 @@ FocalPointAligner/
 
 Configuration is stored in `config.json` next to the application. Preview images are stored in `{output_folder}_preview_landscape` and `{output_folder}_preview_portrait` directories.
 
+## Building for Distribution
+
+### macOS .app Bundle
+
+```bash
+# Install PyInstaller
+pip install pyinstaller
+
+# Run the build script
+./build_macos.sh
+```
+
+Output will be in `dist/FocalPointAligner.app`
+
 ## Development
 
 The original OpenCV-based aligner (`align_focal_points.py`) is preserved for backwards compatibility but is not used by the new PyQt6 GUI.
+
+## License
+
+Internal use - Ceangailte Software
