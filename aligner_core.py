@@ -612,27 +612,20 @@ class FocalPointAlignerCore:
         Returns True if successful, False otherwise.
         """
         try:
-            if focal is None:
-                img, load_method = load_image_safely(img_file)
-                if img is not None:
-                    h, w = img.shape[:2]
-                    focal = (w / 2, h / 2)
-                else:
-                    return False
-            
-            if orientation == "portrait":
-                target_w = self.target_height
-                target_h = self.target_width
-            else:
-                target_w = self.target_width
-                target_h = self.target_height
-            
             img, load_method = load_image_safely(img_file)
             if img is None:
-                return False
+                # Create placeholder so numbering stays sequential
+                logger.warning(f"[align_single_image] Failed to load {img_file.name}, creating placeholder")
+                output_folder.mkdir(parents=True, exist_ok=True)
+                output_name = f"{idx:04d}.jpg"
+                output_path = output_folder / output_name
+                placeholder = np.full((self.target_height, self.target_width, 3), 128, dtype=np.uint8)
+                cv2.imwrite(str(output_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
+                return True
             
-            h, w = img.shape[:2]
-            focal_x, focal_y = focal
+            if focal is None:
+                h, w = img.shape[:2]
+                focal = (w / 2, h / 2)
             
             crop_x, crop_y, scale, crop_w, crop_h = calculate_transformation(
                 focal_x, focal_y, w, h, target_w, target_h
