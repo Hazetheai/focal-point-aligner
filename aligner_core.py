@@ -737,13 +737,12 @@ class FocalPointAlignerCore:
             return True
         
         current_focal = self.focal_points.get(self.current_idx)
-        if current_focal is None:
-            img = self.get_current_image()
-            if img is not None:
-                h, w = img.shape[:2]
-                current_focal = (w / 2, h / 2)
-                self.focal_points[self.current_idx] = current_focal
-                self.auto_center_flags[self.current_idx] = True
+        img = self.get_current_image()
+        if img is not None:
+            h, w = img.shape[:2]
+            current_focal = (w / 2, h / 2)
+            self.focal_points[self.current_idx] = current_focal
+            self.auto_center_flags[self.current_idx] = True
         
         if current_focal is not None:
             logger.info(f"[ensure_preview] Generating preview for idx={self.current_idx}")
@@ -758,6 +757,15 @@ class FocalPointAlignerCore:
                 self.preview_dirty.discard(self.current_idx)
             self.save_focal_points()
             return success
+        elif not preview_path.exists():
+            # Image failed to load - create placeholder so numbering stays sequential
+            logger.warning(f"[ensure_preview] Image failed, creating placeholder for idx={self.current_idx}")
+            placeholder = np.zeros((540, 960, 3), dtype=np.uint8)
+            placeholder[:, :] = (128, 128, 128)  # Gray placeholder
+            cv2.imwrite(str(preview_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
+            with self._preview_generation_lock:
+                self.preview_dirty.discard(self.current_idx)
+            return True
         return False
     
     def navigate(self, direction):
