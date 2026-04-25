@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox, QGridLayout, QFrame
+    QFileDialog, QMessageBox, QGridLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -75,34 +75,6 @@ class OpenerScreen(QWidget):
         
         # Apply palette
         self.setPalette(styles.get_palette())
-        
-        # Drop zone overlay - uses window flags to cover the interior
-        self._drop_overlay = QFrame(self)
-        self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
-        self._drop_overlay.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint | 
-            Qt.WindowType.Tool
-        )
-        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._drop_overlay.setStyleSheet("""
-            QFrame {
-                background-color: rgba(45, 45, 68, 240);
-                border: 3px dashed #60E080;
-            }
-        """)
-        self._drop_overlay.hide()
-        
-        # Drop label - centered in window
-        self._drop_label = QLabel("📂 Drop folder here", self._drop_overlay)
-        self._drop_label.setStyleSheet("""
-            QLabel {
-                color: #60E080;
-                font-size: 28px;
-                font-weight: bold;
-            }
-        """)
-        self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._drop_label.setFixedSize(self.width(), self.height())
         
         layout = QVBoxLayout()
         
@@ -259,30 +231,17 @@ class OpenerScreen(QWidget):
         self.width_spin.setValue(width)
         self.height_spin.setValue(height)
 
-    def _show_drop_visual(self):
-        """Show the drop zone visual."""
-        self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
-        self._drop_label.setFixedSize(self.width(), self.height())
-        self._drop_overlay.show()
-        self._drop_overlay.raise_()
-
-    def _hide_drop_visual(self):
-        """Hide the drop zone visual."""
-        self._drop_overlay.hide()
-
     def dragEnterEvent(self, event):
         """Handle drag enter events - accept folder drops."""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     event.acceptProposedAction()
-                    self._show_drop_visual()
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
         """Handle drag leave events."""
-        self._hide_drop_visual()
         event.accept()
 
     def dragMoveEvent(self, event):
@@ -296,8 +255,6 @@ class OpenerScreen(QWidget):
 
     def dropEvent(self, event):
         """Handle drop events - accept folders dropped anywhere."""
-        self._hide_drop_visual()
-        
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
@@ -314,13 +271,6 @@ class OpenerScreen(QWidget):
                     event.acceptProposedAction()
                     return
         event.ignore()
-
-    def resizeEvent(self, event):
-        """Keep overlay sized when window resizes."""
-        super().resizeEvent(event)
-        if hasattr(self, '_drop_overlay'):
-            self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
-            self._drop_label.setFixedSize(self.width(), self.height())
 
     def on_start_clicked(self):
         # Save config before starting
