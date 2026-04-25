@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox, QGridLayout
+    QFileDialog, QMessageBox, QGridLayout, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
 
@@ -75,6 +75,35 @@ class OpenerScreen(QWidget):
         
         # Apply palette
         self.setPalette(styles.get_palette())
+        
+        # Drop zone overlay (initially hidden)
+        self._drop_overlay = QFrame()
+        self._drop_overlay.setStyleSheet("""
+            QFrame {
+                background-color: rgba(45, 45, 68, 240);
+                border: 3px dashed #60E080;
+            }
+        """)
+        self._drop_overlay.setGeometry(self.rect())
+        self._drop_overlay.setVisible(False)
+        
+        # Container for overlay content
+        self._drop_container = QWidget()
+        self._drop_container.setGeometry(self.rect())
+        self._drop_container.setVisible(False)
+        
+        # Drop zone label
+        self._drop_label = QLabel("📂 Drop folder here")
+        self._drop_label.setStyleSheet("""
+            QLabel {
+                color: #60E080;
+                font-size: 24px;
+                font-weight: bold;
+            }
+        """)
+        self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_label.setParent(self._drop_container)
+        self._drop_label.setGeometry(0, 0, self.width(), self.height())
         
         layout = QVBoxLayout()
         layout.setSpacing(styles.SPACING['md'])
@@ -231,16 +260,21 @@ class OpenerScreen(QWidget):
 
     def dragEnterEvent(self, event):
         """Handle drag enter events to accept folder drops anywhere on the screen."""
-        print(f"[DRAG] dragEnterEvent called, hasUrls={event.mimeData().hasUrls()}")
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                print(f"[DRAG] url={url}, isLocalFile={url.isLocalFile()}")
                 if url.isLocalFile():
                     event.acceptProposedAction()
-                    print("[DRAG] Accepted!")
+                    # Show overlay
+                    self._drop_overlay.setVisible(True)
+                    self._drop_container.setVisible(True)
                     return
         event.ignore()
-        print("[DRAG] Ignored!")
+
+    def dragLeaveEvent(self, event):
+        """Handle drag leave events to hide overlay."""
+        self._drop_overlay.setVisible(False)
+        self._drop_container.setVisible(False)
+        event.accept()
 
     def dragMoveEvent(self, event):
         """Handle drag move events for visual feedback."""
@@ -248,18 +282,22 @@ class OpenerScreen(QWidget):
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     event.acceptProposedAction()
+                    # Ensure overlay stays visible
+                    self._drop_overlay.setVisible(True)
+                    self._drop_container.setVisible(True)
                     return
         event.ignore()
 
     def dropEvent(self, event):
         """Handle drop events - accept folders dropped anywhere on the screen."""
-        print(f"[DRAG] dropEvent called, hasUrls={event.mimeData().hasUrls()}")
+        # Hide overlay first
+        self._drop_overlay.setVisible(False)
+        self._drop_container.setVisible(False)
+        
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                print(f"[DRAG] url={url}, isLocalFile={url.isLocalFile()}")
                 if url.isLocalFile():
                     folder_path = url.toLocalFile()
-                    print(f"[DRAG] folder_path={folder_path}")
                     # Set as input path
                     self.input_path.setText(folder_path)
                     # Auto-generate output path
@@ -270,10 +308,18 @@ class OpenerScreen(QWidget):
                     self._config['last_output_dir'] = str(output_folder)
                     self._save_config()
                     event.acceptProposedAction()
-                    print("[DRAG] Drop processed successfully!")
                     return
-        print("[DRAG] dropEvent ignored!")
         event.ignore()
+
+    def resizeEvent(self, event):
+        """Keep overlay sized correctly when window resizes."""
+        super().resizeEvent(event)
+        if hasattr(self, '_drop_overlay'):
+            self._drop_overlay.setGeometry(self.rect())
+        if hasattr(self, '_drop_container'):
+            self._drop_container.setGeometry(self.rect())
+        if hasattr(self, '_drop_label'):
+            self._drop_label.setGeometry(0, 0, self.width(), self.height())
 
     def on_start_clicked(self):
         # Save config before starting
