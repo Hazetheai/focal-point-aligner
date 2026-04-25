@@ -78,14 +78,14 @@ class OpenerScreen(QWidget):
         
         # Drop zone overlay - click-through, stable during drag
         self._drop_overlay = QFrame()
-        self._drop_overlay.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._drop_overlay.setStyleSheet("QFrame { border: none; background: transparent; }")
         self._drop_overlay.setGeometry(self.rect())
         self._drop_overlay.lower()
         
         # Drop label - initially hidden
         self._drop_label = QLabel("📂 Drop folder here")
-        self._drop_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._drop_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._drop_label.setStyleSheet("QLabel { color: #60E080; font-size: 28px; font-weight: bold; }")
         self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_label.setGeometry(0, 0, self.width(), self.height())
