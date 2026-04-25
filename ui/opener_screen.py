@@ -235,6 +235,16 @@ class OpenerScreen(QWidget):
                     return
         event.ignore()
 
+    def dragMoveEvent(self, event):
+        """Handle drag move events to provide feedback during drag."""
+        if event.mimeData().hasUrls():
+            # Check if any of the URLs are local files/directories
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
     def dropEvent(self, event):
         """Handle drop events to process dropped folders."""
         if event.mimeData().hasUrls():
@@ -242,20 +252,31 @@ class OpenerScreen(QWidget):
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     folder_path = url.toLocalFile()
-                    # Determine which field received the drop by checking mouse position
-                    # Since we can't easily tell which widget received the event,
-                    # we'll check which field has focus or is under the cursor
+                    # Determine which field received the drop by checking which widget contains the position
                     pos = event.position()
-                    widget = self.childAt(pos.toPoint())
                     
-                    is_input_field = widget == self.input_path or self.input_path.hasFocus()
-                    is_output_field = widget == self.output_path or self.output_path.hasFocus()
+                    # Check if position is within input_path widget
+                    input_rect = self.input_path.rect()
+                    input_top_left = self.input_path.mapTo(self, input_rect.topLeft())
+                    input_bottom_right = self.input_path.mapTo(self, input_rect.bottomRight())
+                    input_contains = (input_top_left.x() <= pos.x() <= input_bottom_right.x() and 
+                                    input_top_left.y() <= pos.y() <= input_bottom_right.y())
                     
-                    # Default to input field if neither has focus (more common use case)
-                    if not is_input_field and not is_output_field:
-                        is_input_field = True
+                    # Check if position is within output_path widget
+                    output_rect = self.output_path.rect()
+                    output_top_left = self.output_path.mapTo(self, output_rect.topLeft())
+                    output_bottom_right = self.output_path.mapTo(self, output_rect.bottomRight())
+                    output_contains = (output_top_left.x() <= pos.x() <= output_bottom_right.x() and 
+                                     output_top_left.y() <= pos.y() <= output_bottom_right.y())
                     
-                    self.handle_folder_drop(folder_path, is_input_field)
+                    if input_contains:
+                        self.handle_folder_drop(folder_path, is_input_field=True)
+                    elif output_contains:
+                        self.handle_folder_drop(folder_path, is_input_field=False)
+                    else:
+                        # Default to input field if neither contains the position (shouldn't happen but safe fallback)
+                        self.handle_folder_drop(folder_path, is_input_field=True)
+                    
                     event.acceptProposedAction()
                     return
         event.ignore()
