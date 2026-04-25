@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
     QFileDialog, QMessageBox, QGridLayout
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QMimeData
 
 import styles
 
@@ -105,6 +105,7 @@ class OpenerScreen(QWidget):
         self.input_path.setPlaceholderText("Select folder containing images...")
         self.input_path.setReadOnly(True)
         self.input_path.setStyleSheet(styles.INPUT_FIELD)
+        self.input_path.setAcceptDrops(True)
         
         self.input_btn = QPushButton("Browse")
         self.input_btn.setStyleSheet(styles.BUTTON_OUTLINE)
@@ -176,6 +177,7 @@ class OpenerScreen(QWidget):
         self.output_path.setPlaceholderText("Will default to input folder + '_aligned'")
         self.output_path.setReadOnly(True)
         self.output_path.setStyleSheet(styles.INPUT_FIELD)
+        self.output_path.setAcceptDrops(True)
         
         self.output_btn = QPushButton("Browse")
         self.output_btn.setStyleSheet(styles.BUTTON_OUTLINE)
@@ -222,7 +224,62 @@ class OpenerScreen(QWidget):
     def apply_preset(self, width, height):
         self.width_spin.setValue(width)
         self.height_spin.setValue(height)
-    
+
+    def dragEnterEvent(self, event):
+        """Handle drag enter events to accept folder drops."""
+        if event.mimeData().hasUrls():
+            # Check if any of the URLs are local files/directories
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        """Handle drop events to process dropped folders."""
+        if event.mimeData().hasUrls():
+            # Get the first URL that is a local file
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    folder_path = url.toLocalFile()
+                    # Determine which field received the drop by checking mouse position
+                    # Since we can't easily tell which widget received the event,
+                    # we'll check which field has focus or is under the cursor
+                    pos = event.position()
+                    widget = self.childAt(pos.toPoint())
+                    
+                    is_input_field = widget == self.input_path or self.input_path.hasFocus()
+                    is_output_field = widget == self.output_path or self.output_path.hasFocus()
+                    
+                    # Default to input field if neither has focus (more common use case)
+                    if not is_input_field and not is_output_field:
+                        is_input_field = True
+                    
+                    self.handle_folder_drop(folder_path, is_input_field)
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def handle_folder_drop(self, folder_path, is_input_field=False):
+        """Process a dropped folder path."""
+        folder_path = Path(folder_path)
+        if folder_path.exists() and folder_path.is_dir():
+            if is_input_field:
+                self.input_path.setText(str(folder_path))
+                # Auto-update output path when input changes via drag/drop
+                output_folder = folder_path.parent / f"{folder_path.name}_aligned"
+                self.output_path.setText(str(output_folder))
+            else:
+                self.output_path.setText(str(folder_path))
+            
+            # Update and save config
+            self._config['last_input_dir'] = self.input_path.text().strip()
+            self._config['last_output_dir'] = self.output_path.text().strip()
+            self._save_config()
+        else:
+            # Show error - not a valid directory
+            QMessageBox.warning(self, "Invalid Folder", "The dropped item is not a valid folder.")
+
     def on_start_clicked(self):
         # Save config before starting
         self._config['last_input_dir'] = self.input_path.text().strip()
