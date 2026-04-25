@@ -30,6 +30,10 @@ class OpenerScreen(QWidget):
         self._load_config()
         self._build_ui()
         
+        print("[DRAG] OpenerScreen init - enabling drag/drop on widget")
+        self.setAcceptDrops(True)
+        print(f"[DRAG] setAcceptDrops called, isAcceptedMouseButtons={self.testAcceptableMouseButtons()}")
+        
         # Restore persisted settings after widgets exist
         last_input = self._config.get('last_input_dir', '')
         last_output = self._config.get('last_output_dir', '')
@@ -228,12 +232,16 @@ class OpenerScreen(QWidget):
 
     def dragEnterEvent(self, event):
         """Handle drag enter events to accept folder drops anywhere on the screen."""
+        print(f"[DRAG] dragEnterEvent called, hasUrls={event.mimeData().hasUrls()}")
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
+                print(f"[DRAG] url={url}, isLocalFile={url.isLocalFile()}")
                 if url.isLocalFile():
                     event.acceptProposedAction()
+                    print("[DRAG] Accepted!")
                     return
         event.ignore()
+        print("[DRAG] Ignored!")
 
     def dragMoveEvent(self, event):
         """Handle drag move events for visual feedback."""
@@ -246,10 +254,13 @@ class OpenerScreen(QWidget):
 
     def dropEvent(self, event):
         """Handle drop events - accept folders dropped anywhere on the screen."""
+        print(f"[DRAG] dropEvent called, hasUrls={event.mimeData().hasUrls()}")
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
+                print(f"[DRAG] url={url}, isLocalFile={url.isLocalFile()}")
                 if url.isLocalFile():
                     folder_path = url.toLocalFile()
+                    print(f"[DRAG] folder_path={folder_path}")
                     # Set as input path
                     self.input_path.setText(folder_path)
                     # Auto-generate output path
@@ -260,7 +271,9 @@ class OpenerScreen(QWidget):
                     self._config['last_output_dir'] = str(output_folder)
                     self._save_config()
                     event.acceptProposedAction()
+                    print("[DRAG] Drop processed successfully!")
                     return
+        print("[DRAG] dropEvent ignored!")
         event.ignore()
 
     def on_start_clicked(self):
