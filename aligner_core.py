@@ -15,6 +15,12 @@ from datetime import datetime
 import cv2
 
 try:
+    from ui.logger import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
+try:
     from PIL import Image
     PIL_AVAILABLE = True
 except ImportError:
@@ -164,10 +170,12 @@ class FocalPointAlignerCore:
         
         self.load_focal_points()
         
+        self._migrate_preview_naming()
+        
         if self.image_files:
             for idx in range(len(self.image_files)):
-                landscape_file = self.preview_landscape_folder / f"{idx + 1:04d}.jpg"
-                portrait_file = self.preview_portrait_folder / f"{idx + 1:04d}.jpg"
+                landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
+                portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
                 if not landscape_file.exists() or not portrait_file.exists():
                     self.preview_dirty.add(idx)
         
@@ -335,9 +343,11 @@ class FocalPointAlignerCore:
         """Load preview image for current index."""
         folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
         if folder is None:
+            logger.warning(f"[get_preview_image] folder is None, orientation={orientation}")
             return None
-        filename = f"{self.current_idx + 1:04d}.jpg"
+        filename = f"{self.current_idx:04d}.jpg"
         preview_path = folder / filename
+        logger.info(f"[get_preview_image] Looking for: {preview_path}, exists={preview_path.exists()}")
         if preview_path.exists():
             return cv2.imread(str(preview_path))
         return None
@@ -395,20 +405,19 @@ class FocalPointAlignerCore:
         
         missing = 0
         for idx in range(total):
-            landscape_file = self.preview_landscape_folder / f"{idx + 1:04d}.jpg"
-            portrait_file = self.preview_portrait_folder / f"{idx + 1:04d}.jpg"
+            landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
+            portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
             if not landscape_file.exists() or not portrait_file.exists():
                 missing += 1
         
         need_count = len(dirty) + missing
-        if need_count > 0:
-            print(f"[PREVIEW] need_count={need_count} (dirty={len(dirty)}, missing={missing})")
+        logger.info(f"[PREVIEW_STATUS] total={total}, dirty={len(dirty)}, missing={missing}, need_count={need_count}")
         return (total, need_count)
     
     def prepare_all_previews_async(self, progress_callback=None):
         """Generate all missing previews in background thread. Thread-safe."""
         def create_placeholder(folder, idx):
-            output_name = f"{idx + 1:04d}.jpg"
+            output_name = f"{idx:04d}.jpg"
             output_path = folder / output_name
             placeholder = np.zeros((100, 100, 3), dtype=np.uint8)
             cv2.imwrite(str(output_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
@@ -425,8 +434,8 @@ class FocalPointAlignerCore:
                 img_name = self.image_files[idx].name if idx < len(self.image_files) else "?"
                 
                 # Skip if preview files already exist
-                landscape_file = self.preview_landscape_folder / f"{idx + 1:04d}.jpg"
-                portrait_file = self.preview_portrait_folder / f"{idx + 1:04d}.jpg"
+                landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
+                portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
                 if landscape_file.exists() and portrait_file.exists():
                     print(f"[PREVIEW] [{idx+1}/{total}] {img_name}: Skipping - previews exist")
                     processed += 1
@@ -593,7 +602,7 @@ class FocalPointAlignerCore:
         M = np.float32([[1, 0, translation[0]], [0, 1, translation[1]]])
         aligned = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         
-        output_name = f"{self.current_idx + 1:04d}.jpg"
+        output_name = f"{self.current_idx:04d}.jpg"
         output_path = self.output_folder / output_name
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 95])
     
@@ -648,7 +657,7 @@ class FocalPointAlignerCore:
                 aligned = cv2.resize(aligned, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
             
             output_folder.mkdir(parents=True, exist_ok=True)
-            output_name = f"{idx + 1:04d}.jpg"
+            output_name = f"{idx:04d}.jpg"
             output_path = output_folder / output_name
             cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 90])
             return True
@@ -716,11 +725,13 @@ class FocalPointAlignerCore:
     def ensure_preview_for_current(self, orientation="landscape"):
         """Ensure preview exists for current image, generating if needed."""
         folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
-        filename = f"{self.current_idx + 1:04d}.jpg"
+        filename = f"{self.current_idx:04d}.jpg"
         preview_path = folder / filename
         
         with self._preview_generation_lock:
             is_dirty = self.current_idx in self.preview_dirty
+        
+        logger.info(f"[ensure_preview] idx={self.current_idx}, file={filename}, exists={preview_path.exists()}, is_dirty={is_dirty}")
         
         if preview_path.exists() and not is_dirty:
             return True
@@ -735,6 +746,7 @@ class FocalPointAlignerCore:
                 self.auto_center_flags[self.current_idx] = True
         
         if current_focal is not None:
+            logger.info(f"[ensure_preview] Generating preview for idx={self.current_idx}")
             success = self.align_single_image(
                 self.current_idx,
                 self.image_files[self.current_idx],
@@ -751,16 +763,21 @@ class FocalPointAlignerCore:
     def navigate(self, direction):
         """Navigate to previous/next image."""
         new_idx = self.current_idx + direction
+        logger.info(f"[navigate] direction={direction}, current_idx={self.current_idx}, new_idx={new_idx}, total={len(self.image_files)}")
         if 0 <= new_idx < len(self.image_files):
             self.current_idx = new_idx
+            logger.info(f"[navigate] setting current_idx={self.current_idx}")
             return True
+        logger.info(f"[navigate] navigation failed - out of bounds")
         return False
     
     def navigate_wrap(self, direction):
         """Navigate with wrapping (for preview mode)."""
         if not self.image_files:
             return False
+        old_idx = self.current_idx
         self.current_idx = (self.current_idx + direction) % len(self.image_files)
+        logger.info(f"[navigate_wrap] direction={direction}, old_idx={old_idx}, new_idx={self.current_idx}")
         return True
     
     def navigate_to(self, idx):
@@ -862,6 +879,9 @@ class FocalPointAlignerCore:
     def discard_current(self):
         """Move current image to discarded folder."""
         current_file = self.image_files[self.current_idx]
+        discarded_idx = self.current_idx
+        logger.info(f"[ALIGNER discard_current] START: current_idx={self.current_idx}, total_images={len(self.image_files)}, file={current_file.name}")
+        
         discard_folder = self.input_folder / "discarded"
         discard_folder.mkdir(exist_ok=True)
         
@@ -875,7 +895,37 @@ class FocalPointAlignerCore:
         if self.current_idx in self.auto_center_flags:
             del self.auto_center_flags[self.current_idx]
         
+        new_focal_points = {}
+        new_completed = set()
+        new_auto_center = {}
+        for idx in list(self.focal_points.keys()):
+            if idx < discarded_idx:
+                new_focal_points[idx] = self.focal_points[idx]
+                if idx in self.completed:
+                    new_completed.add(idx)
+            elif idx > discarded_idx:
+                new_focal_points[idx - 1] = self.focal_points[idx]
+                if idx in self.completed:
+                    new_completed.add(idx - 1)
+        for idx in list(self.auto_center_flags.keys()):
+            if idx < discarded_idx:
+                new_auto_center[idx] = self.auto_center_flags[idx]
+            elif idx > discarded_idx:
+                new_auto_center[idx - 1] = self.auto_center_flags[idx]
+        
+        logger.info(f"[ALIGNER discard_current] Shifting focal_points: {list(self.focal_points.keys())} -> {list(new_focal_points.keys())}")
+        self.focal_points = new_focal_points
+        self.completed = new_completed
+        self.auto_center_flags = new_auto_center
+        
         self.save_focal_points()
+        
+        logger.info(f"[ALIGNER discard_current] Deleting all previews to avoid index confusion...")
+        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
+            if folder and folder.exists():
+                shutil.rmtree(folder)
+        
+        self.preview_dirty.clear()
         
         extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
         self.image_files = sorted([
@@ -883,8 +933,13 @@ class FocalPointAlignerCore:
             if f.is_file() and f.suffix.lower() in extensions
         ])
         
+        logger.info(f"[ALIGNER discard_current] After re-scan: len(image_files)={len(self.image_files)}")
+        
         if self.current_idx >= len(self.image_files):
+            logger.info(f"[ALIGNER discard_current] Adjusting current_idx from {self.current_idx} to {max(0, len(self.image_files) - 1)}")
             self.current_idx = max(0, len(self.image_files) - 1)
+        
+        logger.info(f"[ALIGNER discard_current] DONE: current_idx={self.current_idx}, total_images={len(self.image_files)}")
     
     def reset_all(self):
         """Reset all focal points and preview images."""
@@ -904,11 +959,61 @@ class FocalPointAlignerCore:
         self.alignment_mode = None
         self.save_focal_points()
     
-    def cleanup_preview_folders(self):
-        """Remove preview folders after final export."""
-        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
-            if folder and folder.exists():
-                shutil.rmtree(folder)
+    def _migrate_preview_naming(self):
+        """Migrate from 1-based to 0-based preview naming."""
+        for orientation in ["landscape", "portrait"]:
+            folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
+            if not folder or not folder.exists():
+                continue
+            
+            files = list(folder.iterdir())
+            has_1based = any(f.stem.isdigit() and int(f.stem) > 0 for f in files if f.is_file() and f.suffix.lower() == '.jpg')
+            
+            if not has_1based:
+                continue
+            
+            logger.info(f"[ALIGNER _migrate_preview_naming] Migrating {orientation} folder from 1-based to 0-based naming")
+            
+            for f in list(folder.iterdir()):
+                if f.is_file() and f.suffix.lower() == '.jpg':
+                    try:
+                        old_num = int(f.stem)
+                        new_num = old_num - 1
+                        if new_num >= 0:
+                            new_name = f"{new_num:04d}.jpg"
+                            new_path = folder / new_name
+                            logger.info(f"[ALIGNER _migrate_preview_naming] {f.name} -> {new_name}")
+                            f.rename(new_path)
+                    except ValueError:
+                        pass
+        
+        logger.info(f"[ALIGNER _migrate_preview_naming] DONE")
+    
+    def _renumber_previews(self, from_index, old_image_count):
+        """Shift preview indices down by 1 for all indices >= from_index (0-based)."""
+        logger.info(f"[ALIGNER _renumber_previews] from_index={from_index}, old_image_count={old_image_count}")
+        
+        for orientation in ["landscape", "portrait"]:
+            folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
+            if not folder or not folder.exists():
+                continue
+            
+            files_to_rename = []
+            for i in range(from_index, old_image_count):
+                old_name = f"{i:04d}.jpg"
+                old_path = folder / old_name
+                if old_path.exists():
+                    files_to_rename.append((old_path, i))
+            
+            files_to_rename.sort(key=lambda x: x[1], reverse=True)
+            
+            for old_path, idx in files_to_rename:
+                new_name = f"{idx:04d}.jpg"
+                new_path = folder / new_name
+                logger.info(f"[ALIGNER _renumber_previews] {orientation}: {old_path.name} -> {new_name}")
+                old_path.rename(new_path)
+        
+        logger.info(f"[ALIGNER _renumber_previews] DONE")
     
     def get_preview_folder(self, orientation="landscape"):
         """Get the preview folder for the given orientation."""

@@ -425,6 +425,69 @@ class AlignerScreen(QWidget):
         self._update_nav_dots()
         self._update_progress()
     
+    def _sync_all(self):
+        """Unified sync for all UI elements after index changes - for Original mode."""
+        logger.info(f"[SYNC_ALL] START: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}, tab={self._current_tab}, is_preview={self._is_preview_mode}")
+        
+        # Check for empty list
+        if self.aligner.total_images == 0:
+            logger.warning(f"[SYNC_ALL] No images remaining!")
+            self._show_no_images_message()
+            return
+        
+        # Switch to original tab to show thumbnails
+        if self._current_tab != 0:
+            logger.info(f"[SYNC_ALL] Switching from tab {self._current_tab} to 0")
+            self._tabs.setCurrentIndex(0)
+            self._current_tab = 0
+            self._is_preview_mode = False
+            self._show_original_mode()
+        
+        logger.info(f"[SYNC_ALL] Loading original images...")
+        self._load_original_images()
+        
+        logger.info(f"[SYNC_ALL] Updating header...")
+        self._update_header()
+        
+        logger.info(f"[SYNC_ALL] Updating nav dots to idx={self.aligner.current_idx}...")
+        self._update_nav_dots()
+        
+        logger.info(f"[SYNC_ALL] Updating progress...")
+        self._update_progress()
+        
+        logger.info(f"[SYNC_ALL] DONE: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}")
+    
+    def _sync_preview(self):
+        """Unified sync for preview mode after index changes."""
+        logger.info(f"[SYNC_PREVIEW] START: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}, tab={self._current_tab}")
+        
+        # Check for empty list
+        if self.aligner.total_images == 0:
+            logger.warning(f"[SYNC_PREVIEW] No images remaining!")
+            self._show_no_images_message()
+            return
+        
+        logger.info(f"[SYNC_PREVIEW] Loading preview images...")
+        self._load_preview_images()
+        
+        logger.info(f"[SYNC_PREVIEW] Updating header...")
+        self._update_header()
+        
+        logger.info(f"[SYNC_PREVIEW] Updating nav dots to idx={self.aligner.current_idx}...")
+        self._update_nav_dots()
+        
+        logger.info(f"[SYNC_PREVIEW] DONE: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}")
+    
+    def _show_no_images_message(self):
+        """Show message when no images remain."""
+        QMessageBox.information(
+            self,
+            "No Images",
+            "No images remain in the set. Please select a new folder."
+        )
+        # Emit quit signal
+        self.quit_requested.emit()
+    
     def _load_original_images(self):
         """Load images for Original mode (3-column layout)."""
         from ui.logger import logger
@@ -457,10 +520,14 @@ class AlignerScreen(QWidget):
     
     def _load_preview_images(self):
         """Load preview image for Preview mode (single large image)."""
+        logger.info(f"[LOAD_PREVIEW] START: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}, orientation={self._preview_orientation}")
+        
         self.aligner.ensure_preview_for_current(self._preview_orientation)
         
         preview = self.aligner.get_preview_image(self._preview_orientation)
         current_img = self.aligner.get_current_image()
+        
+        logger.info(f"[LOAD_PREVIEW] preview={'not None' if preview is not None else 'None'}, current_img={'not None' if current_img is not None else 'None'}")
         
         if preview is not None:
             self._preview_image.set_image(preview)
@@ -668,6 +735,7 @@ class AlignerScreen(QWidget):
         """Handle tab change."""
         old_tab = self._current_tab
         self._current_tab = index
+        logger.info(f"[TAB_CHANGE] {old_tab} -> {index}: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}")
         
         if index == 0:
             self._is_preview_mode = False
@@ -680,35 +748,34 @@ class AlignerScreen(QWidget):
             self._update_header()
             
             total, need_count = self.aligner.get_preview_generation_status()
+            logger.info(f"[TAB_CHANGE] Preview status: total={total}, need_count={need_count}")
             
             if need_count > 0:
-                print(f"[PREVIEW] need_count={need_count}, generating previews...")
+                logger.info(f"[TAB_CHANGE] Generating previews, need_count={need_count}")
                 self._show_preview_modal(total)
                 self.aligner.prepare_all_previews_async(
                     progress_callback=self._on_preview_generation_progress
                 )
             else:
-                print(f"[PREVIEW] All previews exist, loading directly")
+                logger.info(f"[TAB_CHANGE] Loading preview directly")
                 self._load_preview_images()
     
     def _on_dot_clicked(self, idx):
         """Handle dot click navigation."""
         self.aligner.navigate_to(idx)
         self._pending_focal = None
-        self._load_current_images()
+        self._sync_all()
     
     def _on_page_clicked(self, idx):
         """Handle page dot click."""
         self.aligner.navigate_to(idx)
         self._pending_focal = None
-        self._load_current_images()
+        self._sync_all()
 
     def _on_dots_moved(self, from_index, to_index):
         """Handle drag-and-drop reordering of navigation dots."""
         if self.aligner.move_image(from_index, to_index):
-            self._load_current_images()
-            self._update_nav_dots()
-            self._update_header()
+            self._sync_all()
     
     def _on_save_and_next(self):
         """Save focal and move to next image."""
@@ -719,13 +786,13 @@ class AlignerScreen(QWidget):
         was_completed = self.aligner.is_current_completed()
         self.aligner.confirm_and_save()
         
-        self._load_current_images()
+        self._sync_all()
     
     def _on_skip(self):
         """Skip to next image."""
         if self.aligner.navigate(1):
             self._pending_focal = None
-            self._load_current_images()
+            self._sync_all()
     
     def _on_prev(self):
         """Navigate to previous image - no wrapping in original mode."""
@@ -733,25 +800,24 @@ class AlignerScreen(QWidget):
             if self.aligner.current_idx > 0:
                 self.aligner.navigate(-1)
                 self._pending_focal = None
-                self._load_current_images()
+                self._sync_all()
         else:  # Preview mode - with wrapping
             self.aligner.navigate_wrap(-1)
-            self._load_preview_images()
-            self._update_nav_dots()
-            self._update_header()
+            self._sync_preview()
     
     def _on_next(self):
         """Navigate to next image - no wrapping in original mode."""
+        logger.info(f"[NAV_NEXT] START: current_idx={self.aligner.current_idx}, tab={self._current_tab}")
         if self._current_tab == 0:  # Original mode - no wrapping
             if self.aligner.current_idx < self.aligner.total_images - 1:
                 self.aligner.navigate(1)
                 self._pending_focal = None
-                self._load_current_images()
+                logger.info(f"[NAV_NEXT] After navigate: current_idx={self.aligner.current_idx}")
+                self._sync_all()
         else:  # Preview mode - with wrapping
             self.aligner.navigate_wrap(1)
-            self._load_preview_images()
-            self._update_nav_dots()
-            self._update_header()
+            logger.info(f"[NAV_NEXT] After navigate_wrap: current_idx={self.aligner.current_idx}")
+            self._sync_preview()
     
     def _on_toggle_preview(self):
         """Toggle preview mode."""
@@ -776,13 +842,37 @@ class AlignerScreen(QWidget):
         self.aligner.clear_focal_point()
         self._main_image.clear_focal_point()
         self._pending_focal = None
-        self._load_current_images()
+        self._update_nav_dots()
+        self._update_header()
     
     def _on_discard(self):
-        """Discard current image."""
+        """Discard current image - with unified sync."""
+        logger.info(f"[DISCARD] START: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}, tab={self._current_tab}, is_preview={self._is_preview_mode}")
+        
+        # Check if list becomes empty first
+        if self.aligner.total_images <= 1:
+            logger.warning(f"[DISCARD] Cannot discard last image!")
+            QMessageBox.warning(
+                self,
+                "Cannot Discard",
+                "Cannot discard the last image. At least one image must remain."
+            )
+            return
+        
+        logger.info(f"[DISCARD] Calling aligner.discard_current()...")
         self.aligner.discard_current()
+        
+        logger.info(f"[DISCARD] After discard: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}")
+        
         self._pending_focal = None
-        self._load_current_images()
+        
+        # Use appropriate sync based on current mode
+        if self._current_tab == 0:
+            logger.info(f"[DISCARD] Using _sync_all() for original mode...")
+            self._sync_all()
+        else:
+            logger.info(f"[DISCARD] Using _sync_preview() for preview mode...")
+            self._sync_preview()
     
     def _on_reset_all(self):
         """Show confirmation modal for reset."""
@@ -849,9 +939,7 @@ class AlignerScreen(QWidget):
             confirm_modal.close()
             self.aligner.reset_all()
             self._pending_focal = None
-            self._load_current_images()
-            self._update_nav_dots()
-            self._update_header()
+            self._sync_all()
         
         reset_btn.clicked.connect(do_reset)
         
@@ -869,12 +957,12 @@ class AlignerScreen(QWidget):
         """Jump by specified count."""
         self.aligner.page_jump(count)
         self._pending_focal = None
-        self._load_current_images()
+        self._sync_all()
     
     def _on_shift(self, direction):
         """Shift current image position."""
         if self.aligner.shift_current(direction):
-            self._load_current_images()
+            self._sync_all()
     
     def _show_position(self):
         """Show current position."""
