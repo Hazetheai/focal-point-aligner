@@ -882,6 +882,7 @@ class FocalPointAlignerCore:
         discarded_idx = self.current_idx
         logger.info(f"[ALIGNER discard_current] START: current_idx={self.current_idx}, total_images={len(self.image_files)}, file={current_file.name}")
         
+        # 1. Move original image to discarded folder
         discard_folder = self.input_folder / "discarded"
         discard_folder.mkdir(exist_ok=True)
         
@@ -889,12 +890,15 @@ class FocalPointAlignerCore:
         shutil.move(str(current_file), str(dest))
         
         self.discarded.add(current_file.name)
+        
+        # 2. Delete focal point data for current index
         if self.current_idx in self.focal_points:
             del self.focal_points[self.current_idx]
             self.completed.discard(self.current_idx)
         if self.current_idx in self.auto_center_flags:
             del self.auto_center_flags[self.current_idx]
         
+        # 3. Shift all in-memory state (focal_points, completed, auto_center_flags) BEFORE file operations
         new_focal_points = {}
         new_completed = set()
         new_auto_center = {}
@@ -918,15 +922,56 @@ class FocalPointAlignerCore:
         self.completed = new_completed
         self.auto_center_flags = new_auto_center
         
-        self.save_focal_points()
+        # 4. Shift preview_dirty indices
+        new_dirty = set()
+        for idx in self.preview_dirty:
+            if idx < discarded_idx:
+                new_dirty.add(idx)
+            elif idx > discarded_idx:
+                new_dirty.add(idx - 1)
+        # Mark current position as dirty so preview regenerates when viewed
+        new_dirty.add(self.current_idx)
+        logger.info(f"[ALIGNER discard_current] Shifting preview_dirty: {self.preview_dirty} -> {new_dirty}")
+        self.preview_dirty = new_dirty
         
-        logger.info(f"[ALIGNER discard_current] Deleting all previews to avoid index confusion...")
-        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
-            if folder and folder.exists():
-                shutil.rmtree(folder)
+        # 5. Handle preview files on disk - delete at discarded_idx, rename all above
+        for orientation in ["landscape", "portrait"]:
+            folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
+            if not folder or not folder.exists():
+                continue
+            
+            # Delete the preview at discarded index
+            preview_to_delete = folder / f"{discarded_idx:04d}.jpg"
+            if preview_to_delete.exists():
+                logger.info(f"[ALIGNER discard_current] Deleting preview {orientation}: {preview_to_delete.name}")
+                preview_to_delete.unlink()
+            
+            # Rename all preview files with index > discarded_idx down by 1
+            # CRITICAL: Use two-pass (temp names) to prevent overwriting
+            previews = sorted(folder.glob("*.jpg"), key=lambda x: int(x.stem))
+            
+            # First pass: rename to temp names
+            temp_files = {}
+            for f in previews:
+                try:
+                    idx = int(f.stem)
+                    if idx > discarded_idx:
+                        temp_name = f"__temp_{idx:04d}.jpg"
+                        temp_path = folder / temp_name
+                        logger.info(f"[ALIGNER discard_current] {orientation}: {f.name} -> {temp_name}")
+                        f.rename(temp_path)
+                        temp_files[idx] = temp_path
+                except ValueError:
+                    pass
+            
+            # Second pass: rename from temp names to final names
+            for idx, temp_path in sorted(temp_files.items()):
+                final_name = f"{idx - 1:04d}.jpg"
+                final_path = folder / final_name
+                logger.info(f"[ALIGNER discard_current] {orientation}: {temp_path.name} -> {final_name}")
+                temp_path.rename(final_path)
         
-        self.preview_dirty.clear()
-        
+        # 6. Re-scan image files
         extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
         self.image_files = sorted([
             f for f in self.input_folder.iterdir()
@@ -935,11 +980,84 @@ class FocalPointAlignerCore:
         
         logger.info(f"[ALIGNER discard_current] After re-scan: len(image_files)={len(self.image_files)}")
         
+        # 7. Adjust current index if needed
         if self.current_idx >= len(self.image_files):
             logger.info(f"[ALIGNER discard_current] Adjusting current_idx from {self.current_idx} to {max(0, len(self.image_files) - 1)}")
             self.current_idx = max(0, len(self.image_files) - 1)
         
+        # 8. Save JSON state
+        self.save_focal_points()
+        
         logger.info(f"[ALIGNER discard_current] DONE: current_idx={self.current_idx}, total_images={len(self.image_files)}")
+    
+    def verify_and_fix_preview_integrity(self):
+        """Ensure preview files are incrementally named 0, 1, 2, ... without gaps."""
+        logger.info(f"[ALIGNER verify_and_fix] Starting integrity check for {len(self.image_files)} images")
+        
+        for orientation in ["landscape", "portrait"]:
+            folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
+            if not folder or not folder.exists():
+                continue
+            
+            # Get all preview files and their indices
+            existing_files = {}
+            for f in folder.glob("*.jpg"):
+                try:
+                    idx = int(f.stem)
+                    existing_files[idx] = f
+                except ValueError:
+                    pass
+            
+            logger.info(f"[ALIGNER verify_and_fix] {orientation}: found indices {sorted(existing_files.keys())}")
+            
+            # Check for gaps and renumber
+            expected_count = len(self.image_files)
+            if len(existing_files) != expected_count:
+                logger.warning(f"[ALIGNER verify_and_fix] {orientation}: mismatch! have {len(existing_files)}, expected {expected_count}")
+            
+            # Now verify and fix: indices should be 0, 1, 2, ... up to expected_count-1
+            needs_fix = False
+            for expected_idx in range(expected_count):
+                if expected_idx not in existing_files:
+                    logger.warning(f"[ALIGNER verify_and_fix] {orientation}: missing index {expected_idx}")
+                    needs_fix = True
+                    break
+            
+            if not needs_fix:
+                # Also check if any index is >= expected_count (out of bounds)
+                max_idx = max(existing_files.keys()) if existing_files else -1
+                if max_idx >= expected_count:
+                    logger.warning(f"[ALIGNER verify_and_fix] {orientation}: has index {max_idx} >= {expected_count}")
+                    needs_fix = True
+            
+            if not needs_fix:
+                continue
+            
+            # Fix: rebuild preview files in correct order
+            logger.info(f"[ALIGNER verify_and_fix] {orientation}: rebuilding previews...")
+            
+            # First, collect what's valid
+            valid_originals = {}
+            for idx, f in existing_files.items():
+                if 0 <= idx < expected_count:
+                    valid_originals[idx] = f
+            
+            # Rename to temporary names first (to avoid collisions)
+            temp_files = {}
+            for idx, f in valid_originals.items():
+                temp_name = f"__temp_{idx:04d}.jpg"
+                temp_path = folder / temp_name
+                f.rename(temp_path)
+                temp_files[idx] = temp_path
+            
+            # Now rename to final correct names
+            for idx, temp_path in sorted(temp_files.items()):
+                final_name = f"{idx:04d}.jpg"
+                final_path = folder / final_name
+                logger.info(f"[ALIGNER verify_and_fix] {orientation}: {temp_path.name} -> {final_name}")
+                temp_path.rename(final_path)
+            
+            logger.info(f"[ALIGNER verify_and_fix] {orientation}: done")
     
     def reset_all(self):
         """Reset all focal points and preview images."""

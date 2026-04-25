@@ -744,6 +744,11 @@ class AlignerScreen(QWidget):
         else:
             self._is_preview_mode = True
             self._show_preview_mode()
+            
+            # Verify preview integrity before loading/generating
+            logger.info(f"[TAB_CHANGE] Verifying preview integrity before generating...")
+            self.aligner.verify_and_fix_preview_integrity()
+            
             self._update_nav_dots()
             self._update_header()
             
