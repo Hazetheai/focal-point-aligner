@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox, QGridLayout, QFrame
+    QFileDialog, QMessageBox, QGridLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -75,22 +75,6 @@ class OpenerScreen(QWidget):
         
         # Apply palette
         self.setPalette(styles.get_palette())
-        
-        # Drop zone overlay - click-through, stable during drag
-        self._drop_overlay = QFrame()
-        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._drop_overlay.setStyleSheet("QFrame { border: none; background: transparent; }")
-        self._drop_overlay.setGeometry(self.rect())
-        self._drop_overlay.lower()
-        
-        # Drop label - initially hidden
-        self._drop_label = QLabel("📂 Drop folder here")
-        self._drop_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._drop_label.setStyleSheet("QLabel { color: #60E080; font-size: 28px; font-weight: bold; }")
-        self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._drop_label.setGeometry(0, 0, self.width(), self.height())
-        self._drop_label.lower()
-        self._drop_label.setVisible(False)
         
         layout = QVBoxLayout()
         layout.setSpacing(styles.SPACING['md'])
@@ -244,35 +228,22 @@ class OpenerScreen(QWidget):
     def apply_preset(self, width, height):
         self.width_spin.setValue(width)
         self.height_spin.setValue(height)
-    
-    def _reset_overlay(self):
-        """Reset overlay to invisible state."""
-        self._drop_overlay.setStyleSheet("QFrame { border: none; background: transparent; }")
-        self._drop_overlay.lower()
-        self._drop_label.setVisible(False)
-        self._drop_label.lower()
-    
+
     def dragEnterEvent(self, event):
-        """Handle drag enter events - show overlay."""
+        """Handle drag enter events - accept folder drops."""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     event.acceptProposedAction()
-                    # Show overlay - just change style
-                    self._drop_overlay.raise_()
-                    self._drop_overlay.setStyleSheet("QFrame { border: 3px dashed #60E080; background-color: rgba(45, 45, 68, 200); }")
-                    self._drop_label.raise_()
-                    self._drop_label.setVisible(True)
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
-        """Handle drag leave events - reset overlay."""
-        self._reset_overlay()
+        """Handle drag leave events."""
         event.accept()
 
     def dragMoveEvent(self, event):
-        """Handle drag move events - ensure overlay stays visible."""
+        """Handle drag move events - accept valid drops."""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
@@ -281,9 +252,7 @@ class OpenerScreen(QWidget):
         event.ignore()
 
     def dropEvent(self, event):
-        """Handle drop events - reset overlay and accept folder."""
-        self._reset_overlay()
-        
+        """Handle drop events - accept folders dropped anywhere."""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
