@@ -87,7 +87,8 @@ class OpenerScreen(QWidget):
         # Welcome text
         welcome = QLabel(
             "Select an input folder containing images, configure target dimensions,\n"
-            "and click Start to begin aligning your images by focal points."
+            "and click Start to begin aligning your images by focal points.\n"
+            "<span style='color:#60E080;'>💡 Drag & drop a folder anywhere on this screen to set the input path</span>"
         )
         welcome.setStyleSheet(styles.LABEL_STYLE)
         welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -226,9 +227,8 @@ class OpenerScreen(QWidget):
         self.height_spin.setValue(height)
 
     def dragEnterEvent(self, event):
-        """Handle drag enter events to accept folder drops."""
+        """Handle drag enter events to accept folder drops anywhere on the screen."""
         if event.mimeData().hasUrls():
-            # Check if any of the URLs are local files/directories
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     event.acceptProposedAction()
@@ -236,9 +236,8 @@ class OpenerScreen(QWidget):
         event.ignore()
 
     def dragMoveEvent(self, event):
-        """Handle drag move events to provide feedback during drag."""
+        """Handle drag move events for visual feedback."""
         if event.mimeData().hasUrls():
-            # Check if any of the URLs are local files/directories
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     event.acceptProposedAction()
@@ -246,60 +245,23 @@ class OpenerScreen(QWidget):
         event.ignore()
 
     def dropEvent(self, event):
-        """Handle drop events to process dropped folders."""
+        """Handle drop events - accept folders dropped anywhere on the screen."""
         if event.mimeData().hasUrls():
-            # Get the first URL that is a local file
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     folder_path = url.toLocalFile()
-                    # Determine which field received the drop by checking which widget contains the position
-                    pos = event.position()
-                    
-                    # Check if position is within input_path widget
-                    input_rect = self.input_path.rect()
-                    input_top_left = self.input_path.mapTo(self, input_rect.topLeft())
-                    input_bottom_right = self.input_path.mapTo(self, input_rect.bottomRight())
-                    input_contains = (input_top_left.x() <= pos.x() <= input_bottom_right.x() and 
-                                    input_top_left.y() <= pos.y() <= input_bottom_right.y())
-                    
-                    # Check if position is within output_path widget
-                    output_rect = self.output_path.rect()
-                    output_top_left = self.output_path.mapTo(self, output_rect.topLeft())
-                    output_bottom_right = self.output_path.mapTo(self, output_rect.bottomRight())
-                    output_contains = (output_top_left.x() <= pos.x() <= output_bottom_right.x() and 
-                                     output_top_left.y() <= pos.y() <= output_bottom_right.y())
-                    
-                    if input_contains:
-                        self.handle_folder_drop(folder_path, is_input_field=True)
-                    elif output_contains:
-                        self.handle_folder_drop(folder_path, is_input_field=False)
-                    else:
-                        # Default to input field if neither contains the position (shouldn't happen but safe fallback)
-                        self.handle_folder_drop(folder_path, is_input_field=True)
-                    
+                    # Set as input path
+                    self.input_path.setText(folder_path)
+                    # Auto-generate output path
+                    output_folder = Path(folder_path).parent / f"{Path(folder_path).name}_aligned"
+                    self.output_path.setText(str(output_folder))
+                    # Save config
+                    self._config['last_input_dir'] = folder_path
+                    self._config['last_output_dir'] = str(output_folder)
+                    self._save_config()
                     event.acceptProposedAction()
                     return
         event.ignore()
-
-    def handle_folder_drop(self, folder_path, is_input_field=False):
-        """Process a dropped folder path."""
-        folder_path = Path(folder_path)
-        if folder_path.exists() and folder_path.is_dir():
-            if is_input_field:
-                self.input_path.setText(str(folder_path))
-                # Auto-update output path when input changes via drag/drop
-                output_folder = folder_path.parent / f"{folder_path.name}_aligned"
-                self.output_path.setText(str(output_folder))
-            else:
-                self.output_path.setText(str(folder_path))
-            
-            # Update and save config
-            self._config['last_input_dir'] = self.input_path.text().strip()
-            self._config['last_output_dir'] = self.output_path.text().strip()
-            self._save_config()
-        else:
-            # Show error - not a valid directory
-            QMessageBox.warning(self, "Invalid Folder", "The dropped item is not a valid folder.")
 
     def on_start_clicked(self):
         # Save config before starting
