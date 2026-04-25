@@ -940,6 +940,11 @@ class FocalPointAlignerCore:
             if not folder or not folder.exists():
                 continue
             
+            # Clean up any stray temp files from previous operations
+            for f in folder.glob("__temp_*.jpg"):
+                logger.warning(f"[ALIGNER discard_current] Deleting stray temp file: {f.name}")
+                f.unlink()
+            
             # Delete the preview at discarded index
             preview_to_delete = folder / f"{discarded_idx:04d}.jpg"
             if preview_to_delete.exists():
@@ -998,6 +1003,11 @@ class FocalPointAlignerCore:
             folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
             if not folder or not folder.exists():
                 continue
+            
+            # First, clean up any stray temp files from previous failed renames
+            for f in folder.glob("__temp_*.jpg"):
+                logger.warning(f"[ALIGNER verify_and_fix] Deleting stray temp file: {f.name}")
+                f.unlink()
             
             # Get all preview files and their indices
             existing_files = {}
