@@ -32,7 +32,6 @@ class OpenerScreen(QWidget):
         
         print("[DRAG] OpenerScreen init - enabling drag/drop on widget")
         self.setAcceptDrops(True)
-        print(f"[DRAG] setAcceptDrops called, isAcceptedMouseButtons={self.testAcceptableMouseButtons()}")
         
         # Restore persisted settings after widgets exist
         last_input = self._config.get('last_input_dir', '')
