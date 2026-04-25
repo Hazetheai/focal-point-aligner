@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox, QGridLayout
+    QFileDialog, QMessageBox, QGridLayout, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -75,6 +75,22 @@ class OpenerScreen(QWidget):
         
         # Apply palette
         self.setPalette(styles.get_palette())
+        
+        # Drop zone placeholder - always present, styled to be invisible
+        # Use WA_TransparentForMouseEvents to allow clicks to pass through
+        self._drop_placeholder = QFrame()
+        self._drop_placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drop_placeholder.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self._drop_placeholder.setGeometry(0, 0, self.width(), self.height())
+        self._drop_placeholder.lower()
+        
+        # Drop label - always present, click-through
+        self._drop_label = QLabel("📂 Drop folder here")
+        self._drop_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drop_label.setStyleSheet("QLabel { color: transparent; font-size: 28px; font-weight: bold; }")
+        self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._drop_label.setGeometry(0, 0, self.width(), self.height())
+        self._drop_label.lower()
         
         layout = QVBoxLayout()
         layout.setSpacing(styles.SPACING['md'])
@@ -229,17 +245,33 @@ class OpenerScreen(QWidget):
         self.width_spin.setValue(width)
         self.height_spin.setValue(height)
 
+    def _show_drop_visual(self):
+        """Show the drop zone visual - just change styles."""
+        self._drop_placeholder.setStyleSheet("QFrame { background-color: rgba(45, 45, 68, 200); border: 3px dashed #60E080; }")
+        self._drop_placeholder.raise_()
+        self._drop_label.setStyleSheet("QLabel { color: #60E080; font-size: 28px; font-weight: bold; }")
+        self._drop_label.raise_()
+
+    def _hide_drop_visual(self):
+        """Hide the drop zone visual - just change styles."""
+        self._drop_placeholder.setStyleSheet("QFrame { background: transparent; border: none; }")
+        self._drop_placeholder.lower()
+        self._drop_label.setStyleSheet("QLabel { color: transparent; font-size: 28px; font-weight: bold; }")
+        self._drop_label.lower()
+
     def dragEnterEvent(self, event):
         """Handle drag enter events - accept folder drops."""
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
                     event.acceptProposedAction()
+                    self._show_drop_visual()
                     return
         event.ignore()
 
     def dragLeaveEvent(self, event):
         """Handle drag leave events."""
+        self._hide_drop_visual()
         event.accept()
 
     def dragMoveEvent(self, event):
@@ -253,6 +285,8 @@ class OpenerScreen(QWidget):
 
     def dropEvent(self, event):
         """Handle drop events - accept folders dropped anywhere."""
+        self._hide_drop_visual()
+        
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 if url.isLocalFile():
