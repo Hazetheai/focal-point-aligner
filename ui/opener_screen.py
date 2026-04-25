@@ -76,21 +76,35 @@ class OpenerScreen(QWidget):
         # Apply palette
         self.setPalette(styles.get_palette())
         
-        # Drop zone placeholder - always present, styled to be invisible
-        # Use WA_TransparentForMouseEvents to allow clicks to pass through
-        self._drop_placeholder = QFrame()
-        self._drop_placeholder.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._drop_placeholder.setStyleSheet("QFrame { background: transparent; border: none; }")
-        self._drop_placeholder.setGeometry(0, 0, self.width(), self.height())
-        self._drop_placeholder.lower()
+        # Drop zone overlay - uses window flags to cover the interior
+        self._drop_overlay = QFrame(self)
+        self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._drop_overlay.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.Tool
+        )
+        self._drop_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._drop_overlay.setStyleSheet("""
+            QFrame {
+                background-color: rgba(45, 45, 68, 240);
+                border: 3px dashed #60E080;
+            }
+        """)
+        self._drop_overlay.hide()
         
-        # Drop label - always present, click-through
-        self._drop_label = QLabel("📂 Drop folder here")
-        self._drop_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self._drop_label.setStyleSheet("QLabel { color: transparent; font-size: 28px; font-weight: bold; }")
+        # Drop label - centered in window
+        self._drop_label = QLabel("📂 Drop folder here", self._drop_overlay)
+        self._drop_label.setStyleSheet("""
+            QLabel {
+                color: #60E080;
+                font-size: 28px;
+                font-weight: bold;
+            }
+        """)
         self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._drop_label.setGeometry(0, 0, self.width(), self.height())
-        self._drop_label.lower()
+        self._drop_label.setFixedSize(self.width(), self.height())
+        
+        layout = QVBoxLayout()
         
         layout = QVBoxLayout()
         layout.setSpacing(styles.SPACING['md'])
@@ -246,18 +260,15 @@ class OpenerScreen(QWidget):
         self.height_spin.setValue(height)
 
     def _show_drop_visual(self):
-        """Show the drop zone visual - just change styles."""
-        self._drop_placeholder.setStyleSheet("QFrame { background-color: rgba(45, 45, 68, 200); border: 3px dashed #60E080; }")
-        self._drop_placeholder.raise_()
-        self._drop_label.setStyleSheet("QLabel { color: #60E080; font-size: 28px; font-weight: bold; }")
-        self._drop_label.raise_()
+        """Show the drop zone visual."""
+        self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
+        self._drop_label.setFixedSize(self.width(), self.height())
+        self._drop_overlay.show()
+        self._drop_overlay.raise_()
 
     def _hide_drop_visual(self):
-        """Hide the drop zone visual - just change styles."""
-        self._drop_placeholder.setStyleSheet("QFrame { background: transparent; border: none; }")
-        self._drop_placeholder.lower()
-        self._drop_label.setStyleSheet("QLabel { color: transparent; font-size: 28px; font-weight: bold; }")
-        self._drop_label.lower()
+        """Hide the drop zone visual."""
+        self._drop_overlay.hide()
 
     def dragEnterEvent(self, event):
         """Handle drag enter events - accept folder drops."""
@@ -303,6 +314,13 @@ class OpenerScreen(QWidget):
                     event.acceptProposedAction()
                     return
         event.ignore()
+
+    def resizeEvent(self, event):
+        """Keep overlay sized when window resizes."""
+        super().resizeEvent(event)
+        if hasattr(self, '_drop_overlay'):
+            self._drop_overlay.setGeometry(0, 0, self.width(), self.height())
+            self._drop_label.setFixedSize(self.width(), self.height())
 
     def on_start_clicked(self):
         # Save config before starting
