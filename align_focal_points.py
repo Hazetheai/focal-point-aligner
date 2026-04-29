@@ -112,7 +112,7 @@ class FocalPointAligner:
         self.target_width = config.get('target_width', 2560)
         self.target_height = config.get('target_height', 1440)
         
-        self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview"
+        self.preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview"
         
         self.json_path = self.output_folder / "focal_points.json"
         
@@ -134,9 +134,9 @@ class FocalPointAligner:
                 pass
         
         if self.alignment_mode:
-            self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{self.alignment_mode}"
+            self.preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_{self.alignment_mode}"
         else:
-            self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview"
+        self.preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview"
         
         extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
         self.image_files = sorted([
@@ -902,7 +902,7 @@ class FocalPointAligner:
         
         if self.alignment_mode is not None:
             other_orientation = "portrait" if self.alignment_mode == "landscape" else "landscape"
-            other_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{other_orientation}"
+            other_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_{other_orientation}"
             old_folder = self.preview_folder
             self.preview_folder = other_folder
             self.preview_folder.mkdir(parents=True, exist_ok=True)
@@ -975,7 +975,7 @@ class FocalPointAligner:
         M = np.float32([[1, 0, translation[0]], [0, 1, translation[1]]])
         aligned = cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
         
-        output_name = f"{self.current_idx + 1:04d}.jpg"
+        output_name = f"{self.current_idx:04d}.jpg"
         output_path = self.output_folder / output_name
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 95])
     
@@ -1102,7 +1102,7 @@ class FocalPointAligner:
             self.json_path.unlink()
         
         for orientation in ['landscape', 'portrait']:
-            preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{orientation}"
+            preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_{orientation}"
             if preview_folder.exists():
                 shutil.rmtree(preview_folder)
         
@@ -1274,7 +1274,7 @@ class FocalPointAligner:
                         self.alignment_mode = "portrait"
                     else:
                         self.alignment_mode = "landscape"
-                    self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{self.alignment_mode}"
+                    self.preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_{self.alignment_mode}"
                     self.preview_folder.mkdir(parents=True, exist_ok=True)
                     log(f"[ORIENT] Changed orientation | {old_mode} -> {self.alignment_mode} | current_idx was {old_idx}, now {self.current_idx}")
                     self.save_focal_points()
@@ -1366,7 +1366,7 @@ class FocalPointAligner:
                         self.alignment_mode = "portrait"
                     else:
                         self.alignment_mode = "landscape"
-                    self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{self.alignment_mode}"
+                    self.preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_{self.alignment_mode}"
                     self.preview_folder.mkdir(parents=True, exist_ok=True)
                     print(f"Switched to {self.alignment_mode} mode")
                     self.save_focal_points()
@@ -1393,7 +1393,7 @@ class FocalPointAligner:
             if result == "quit" or result is None:
                 return
             self.alignment_mode = result
-            self.preview_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_{self.alignment_mode}"
+            self.preview_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_{self.alignment_mode}"
             self.preview_folder.mkdir(parents=True, exist_ok=True)
             log(f"[MODE] Selected {self.alignment_mode} mode")
             self.save_focal_points()
@@ -1457,7 +1457,7 @@ class FocalPointAligner:
                     current_focal = (w / 2, h / 2)
                     self.focal_points[idx] = current_focal
             
-            preview_path = self.preview_folder / f"{idx + 1:04d}.jpg"
+            preview_path = self.preview_folder / f"{idx:04d}.jpg"
             
             if not preview_path.exists() and current_focal is not None:
                 log(f"[PREVIEW] Will align: idx={idx}, file={img_file.name}, focal={current_focal}")
@@ -1513,7 +1513,7 @@ class FocalPointAligner:
             if aligned.shape[0] != crop_h or aligned.shape[1] != crop_w:
                 aligned = cv2.resize(aligned, (crop_w, crop_h), interpolation=cv2.INTER_LANCZOS4)
         
-        output_name = f"{idx + 1:04d}.jpg"
+        output_name = f"{idx:04d}.jpg"
         output_path = self.preview_folder / output_name
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 90])
         
@@ -1522,7 +1522,7 @@ class FocalPointAligner:
     def get_aligned_preview_path(self, idx):
         if self.alignment_mode is None:
             return None
-        filename = f"{idx + 1:04d}.jpg"
+        filename = f"{idx:04d}.jpg"
         preview_path = self.preview_folder / filename
         if preview_path.exists():
             return preview_path

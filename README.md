@@ -1,57 +1,189 @@
-# Focal Point Aligner
+# FocalPointAligner
 
-A PyQt6-based GUI tool for aligning images based on user-defined focal points.
+A tool for aligning images by selecting focal points. Images are processed so that the focal point is centered and the image fills the target frame.
 
 ## Features
 
-- **Interactive Focal Point Selection**: Click on images to set focal points
-- **Drag-and-Drop Reordering**: Reorder images by dragging navigation dots
-- **Preview Mode**: Generate and view aligned previews in landscape or portrait orientation
-- **Directory Persistence**: Remembers last used input/output directories
-- **Keyboard Shortcuts**: Full keyboard navigation support
-- **Batch Processing**: Efficiently process large sets of images
-- **Cross-Platform**: Works on macOS, Windows, and Linux
-
-## Requirements
-
-- Python 3.11+
-- PyQt6 6.9+
-- opencv-python 4.13+
-- pillow 12.0+
-- numpy 2.0+
+- Interactive GUI (PyQt6)
+- CLI interface for programmatic testing
+- Batch processing
+- Auto-save with crash recovery
+- Preview generation for both landscape and portrait orientations
 
 ## Installation
 
-### Using Conda
-
 ```bash
-# Create a new conda environment
-conda create -n focal-align python=3.11
-conda activate focal-align
-
-# Install dependencies
-pip install PyQt6>=6.9.0 opencv-python>=4.13.0 pillow>=12.0.0 numpy>=2.0.0
+pip install -r requirements.txt
 ```
 
-### Using pip (with existing Python)
+Requirements:
+- PyQt6>=6.9.0
+- opencv-python>=4.13.0
+- pillow>=12.0.0
+- numpy>=2.0.0
+
+## Quick Start (GUI)
 
 ```bash
-pip install PyQt6>=6.9.0 opencv-python>=4.13.0 pillow>=12.0.0 numpy>=2.0.0
+python main.py
 ```
 
-## Usage
+## CLI Usage
+
+The CLI interface enables programmatic testing and batch operations.
+
+### Initialize a Project
 
 ```bash
-# Activate environment (if using conda)
-conda activate focal-align
-
-# Run the application
-python FocalPointAligner/main.py
+python cli.py init --input /path/to/images --output /path/to/output
 ```
 
-On first run, macOS may show a warning about "unidentified developer". To bypass: right-click the app and select "Open".
+Options:
+- `--input` - Input folder containing images (required)
+- `--output` - Output folder (default: input_folder_aligned)
+- `--width` - Target width (default: 2560)
+- `--height` - Target height (default: 1440)
 
-## Keyboard Shortcuts
+### Check Status
+
+```bash
+python cli.py status
+```
+
+With JSON output for programmatic parsing:
+```bash
+python cli.py status --json
+```
+
+### Set Focal Points
+
+```bash
+# Set focal point for current image
+python cli.py set-focal --x 1280 --y 720
+
+# Set focal point for specific image
+python cli.py set-focal --index 0 --x 1280 --y 720
+```
+
+### Navigate Images
+
+```bash
+python cli.py navigate --next
+python cli.py navigate --prev
+python cli.py navigate --index 5
+```
+
+### Save and Advance
+
+```bash
+python cli.py save
+```
+
+### Skip Without Saving
+
+```bash
+python cli.py skip
+```
+
+### List Images
+
+```bash
+# List all images
+python cli.py list-images
+
+# List only images with focal points
+python cli.py list-images --with-focal
+
+# List only images without focal points
+python cli.py list-images --without-focal
+
+# JSON output
+python cli.py list-images --json
+```
+
+### Export Aligned Images
+
+```bash
+python cli.py export --orientation landscape
+python cli.py export --orientation portrait
+```
+
+### Get Image Info
+
+```bash
+# Get original image info
+python cli.py get-image --index 0 --type original
+
+# Save preview image to disk
+python cli.py get-image --index 0 --type preview --orientation landscape --save-to /tmp/preview.jpg
+```
+
+### Other Commands
+
+```bash
+# Clear focal point
+python cli.py clear-focal
+python cli.py clear-focal --index 5
+
+# Discard image
+python cli.py discard
+python cli.py discard --index 5
+
+# Reset all (with confirmation)
+python cli.py reset
+
+# Reset all (skip confirmation)
+python cli.py reset --confirm
+
+# Show statistics
+python cli.py stats
+python cli.py stats --json
+```
+
+## All Commands Reference
+
+| Command | Description | Key Arguments |
+|---------|-------------|-----------------|
+| `init` | Initialize project | `--input`, `--output`, `--width`, `--height` |
+| `status` | Show current status | `--json` |
+| `navigate` | Navigate images | `--index N`, `--next`, `--prev` |
+| `set-focal` | Set focal point | `--x`, `--y`, `--index` |
+| `save` | Save and advance | - |
+| `skip` | Skip without saving | - |
+| `clear-focal` | Clear focal point | `--index` |
+| `discard` | Discard image | `--index` |
+| `reset` | Reset all focal points | `--confirm` |
+| `export` | Export aligned images | `--orientation` |
+| `stats` | Show statistics | `--json` |
+| `list-images` | List images | `--with-focal`, `--without-focal`, `--json` |
+| `get-image` | Get image info | `--index`, `--type`, `--orientation`, `--save-to` |
+
+## JSON Output
+
+All commands support `--json` flag for programmatic output:
+
+```bash
+python cli.py status --json | jq '.'
+# Output: {"current_index": 0, "total_images": 10, ...}
+```
+
+## Testing
+
+Run CLI tests with pytest:
+
+```bash
+pytest tests/test_cli.py -v
+```
+
+## Batch Processing (Legacy)
+
+For batch processing without the interactive GUI, use:
+
+```bash
+python scripts/align_and_scale_images.py /path/to/images --orientation landscape
+```
+
+## Keyboard Shortcuts (GUI)
 
 | Key | Action |
 |-----|--------|
@@ -70,18 +202,23 @@ On first run, macOS may show a warning about "unidentified developer". To bypass
 
 ```
 FocalPointAligner/
-├── main.py                 # Application entry point
-├── aligner_core.py         # Core alignment logic
+├── cli.py                  # CLI interface
+├── main.py                 # PyQt6 GUI entry point
+├── aligner_core.py         # Core logic (UI-independent)
 ├── styles.py               # UI styling constants
-├── requirements.txt        # Python dependencies
-├── ui/
+├── scripts/
+│   └── align_and_scale_images.py  # Batch processing
+├── ui/                     # PyQt6 UI components
 │   ├── aligner_screen.py   # Main aligner UI
-│   ├── end_menu.py        # Export dialog
-│   ├── navigation_dots.py # Navigation dots widget
-│   ├── image_display.py   # Image display widget
-│   ├── opener_screen.py   # Folder selection screen
-│   ├── thumbnail_widget.py# Thumbnail display
-│   └── logger.py          # Logging utilities
+│   ├── end_menu.py         # Export dialog
+│   ├── navigation_dots.py  # Navigation dots widget
+│   ├── image_display.py    # Image display widget
+│   ├── opener_screen.py    # Folder selection screen
+│   ├── thumbnail_widget.py # Thumbnail display
+│   └── logger.py           # Logging utilities
+├── tests/
+│   └── test_cli.py         # CLI tests
+├── requirements.txt        # Python dependencies
 ├── FocalPointAligner.spec  # PyInstaller build config (macOS)
 └── build_macos.sh          # Build script for macOS .app
 ```

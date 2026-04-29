@@ -20,7 +20,7 @@ def setup_logging():
     file_handler = logging.FileHandler(LOG_FILE, mode='a')
     file_handler.setLevel(logging.DEBUG)
     
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setLevel(logging.INFO)
     
     formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', datefmt='%H:%M:%S')

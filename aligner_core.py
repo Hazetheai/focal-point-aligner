@@ -127,8 +127,12 @@ class FocalPointAlignerCore:
         self.target_width = config.get('target_width', 2560)
         self.target_height = config.get('target_height', 1440)
         
-        self.preview_landscape_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_landscape"
-        self.preview_portrait_folder = self.output_folder.parent / f"{self.output_folder.name}_preview_portrait"
+        self.preview_landscape_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_landscape"
+        self.preview_portrait_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_portrait"
+        
+        # Create preview folders at initialization
+        self.preview_landscape_folder.mkdir(parents=True, exist_ok=True)
+        self.preview_portrait_folder.mkdir(parents=True, exist_ok=True)
         
         self.json_path = self.output_folder / "focal_points.json"
         
@@ -219,8 +223,12 @@ class FocalPointAlignerCore:
                 if "discarded" in data:
                     self.discarded = set(data["discarded"])
                 
+                if "current_idx" in data:
+                    self.current_idx = data["current_idx"]
+                    self._current_idx_loaded = True
+                
                 focal_data = {k: v for k, v in data.items() 
-                              if k not in ["alignment_mode", "preview_state", "discarded", "_meta"]}
+                              if k not in ["alignment_mode", "preview_state", "discarded", "current_idx", "_meta"]}
                 
                 existing_files = {f.name for f in self.image_files}
                 
@@ -244,17 +252,21 @@ class FocalPointAlignerCore:
                             break
                 
                 if self.focal_points:
-                    first_pending = 0
-                    for i in range(len(self.image_files)):
-                        if i not in self.completed:
-                            first_pending = i
-                            break
-                    else:
-                        first_pending = len(self.image_files) - 1
-                    
-                    self.current_idx = first_pending
+                    # Only set first_pending if current_idx was NOT loaded from JSON
+                    if not hasattr(self, '_current_idx_loaded'):
+                        first_pending = 0
+                        for i in range(len(self.image_files)):
+                            if i not in self.completed:
+                                first_pending = i
+                                break
+                        else:
+                            first_pending = len(self.image_files) - 1
+                        self.current_idx = first_pending
+                else:
+                    # No focal points, start at 0
+                    self.current_idx = 0
             except Exception as e:
-                print(f"Warning: Could not load focal points: {e}")
+                logger.warning(f"Warning: Could not load focal points: {e}")
     
     def save_focal_points(self):
         stale_indices = [idx for idx in self.focal_points.keys() if idx >= len(self.image_files)]
@@ -268,7 +280,9 @@ class FocalPointAlignerCore:
             "version": JSON_VERSION,
             "target_width": self.target_width,
             "target_height": self.target_height
-        }}
+        },
+            "current_idx": self.current_idx,
+        }
         
         for idx, focal in self.focal_points.items():
             if idx < len(self.image_files):
@@ -297,7 +311,7 @@ class FocalPointAlignerCore:
             with open(self.json_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"Warning: Could not save focal points: {e}")
+            logger.warning(f"Warning: Could not save focal points: {e}")
     
     def delete_focal_points_file(self):
         """Delete the focal points JSON file."""
@@ -305,7 +319,7 @@ class FocalPointAlignerCore:
             try:
                 self.json_path.unlink()
             except Exception as e:
-                print(f"Warning: Could not delete focal points file: {e}")
+                logger.warning(f"Warning: Could not delete focal points file: {e}")
     
     def get_current_image(self):
         """Load and return the current original image."""
@@ -428,7 +442,7 @@ class FocalPointAlignerCore:
             consecutive_failures = 0
             max_consecutive_failures = 3
             
-            print(f"[PREVIEW] Starting background_task for {total} images")
+            logger.info(f"[PREVIEW] Starting background_task for {total} images")
             
             for idx in range(total):
                 img_name = self.image_files[idx].name if idx < len(self.image_files) else "?"
@@ -437,21 +451,21 @@ class FocalPointAlignerCore:
                 landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
                 portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
                 if landscape_file.exists() and portrait_file.exists():
-                    print(f"[PREVIEW] [{idx+1}/{total}] {img_name}: Skipping - previews exist")
+                    logger.info(f"[PREVIEW] [{idx+1}/{total}] {img_name}: Skipping - previews exist")
                     processed += 1
                     if progress_callback:
                         progress_callback(processed, total, img_name)
                     continue
                 
-                print(f"[PREVIEW] [{idx+1}/{total}] Processing: {img_name}")
+                logger.info(f"[PREVIEW] [{idx+1}/{total}] Processing: {img_name}")
                 
                 # Safety: skip if too many consecutive failures
                 if consecutive_failures >= max_consecutive_failures:
-                    print(f"[PREVIEW] Warning: Too many consecutive failures, stopping at image {idx + 1}")
+                    logger.warning(f"[PREVIEW] Warning: Too many consecutive failures, stopping at image {idx + 1}")
                     break
                 
                 if self._cancel_preview_generation:
-                    print(f"[PREVIEW] {img_name}: cancelled, skipping")
+                    logger.info(f"[PREVIEW] {img_name}: cancelled, skipping")
                     with self._preview_generation_lock:
                         self.preview_dirty.discard(idx)
                     continue
@@ -460,10 +474,10 @@ class FocalPointAlignerCore:
                 with self._preview_generation_lock:
                     focal = self.focal_points.get(idx)
                 
-                print(f"[PREVIEW] {img_name}: focal={focal}")
+                logger.info(f"[PREVIEW] {img_name}: focal={focal}")
                 
                 if focal is None:
-                    print(f"[PREVIEW] {img_name}: No focal, loading image...")
+                    logger.info(f"[PREVIEW] {img_name}: No focal, loading image...")
                     img, load_method = load_image_safely(self.image_files[idx])
                     if img is not None:
                         h, w = img.shape[:2]
@@ -472,73 +486,73 @@ class FocalPointAlignerCore:
                             self.focal_points[idx] = focal
                             self.auto_center_flags[idx] = True
                         consecutive_failures = 0
-                        print(f"[PREVIEW] {img_name}: Auto-centered at {focal}")
+                        logger.info(f"[PREVIEW] {img_name}: Auto-centered at {focal}")
                     else:
-                        print(f"[PREVIEW] {img_name}: Failed to load, skipping")
+                        logger.warning(f"[PREVIEW] {img_name}: Failed to load, skipping")
                         with self._preview_generation_lock:
                             self.preview_dirty.discard(idx)
                         consecutive_failures += 1
                         continue
                 
                 if focal is None:
-                    print(f"[PREVIEW] {img_name}: Still no focal, skipping")
+                    logger.info(f"[PREVIEW] {img_name}: Still no focal, skipping")
                     with self._preview_generation_lock:
                         self.preview_dirty.discard(idx)
                     consecutive_failures += 1
                     continue
                 
                 if self._cancel_preview_generation:
-                    print(f"[PREVIEW] {img_name}: cancelled before alignment, skipping")
+                    logger.info(f"[PREVIEW] {img_name}: cancelled before alignment, skipping")
                     with self._preview_generation_lock:
                         self.preview_dirty.discard(idx)
                     continue
                 
                 consecutive_failures = 0
                 
-                print(f"[PREVIEW] {img_name}: Aligning landscape...")
+                logger.info(f"[PREVIEW] {img_name}: Aligning landscape...")
                 try:
                     success = self._align_single_image_threaded(
                         idx, self.image_files[idx], focal,
                         self.preview_landscape_folder, "landscape", timeout=30)
                     if not success:
-                        print(f"[PREVIEW] {img_name}: Landscape skipped due to timeout/error")
+                        logger.info(f"[PREVIEW] {img_name}: Landscape skipped due to timeout/error")
                 except Exception as e:
-                    print(f"[PREVIEW] {img_name}: Landscape error: {e}")
+                    logger.warning(f"[PREVIEW] {img_name}: Landscape error: {e}")
                 
-                print(f"[PREVIEW] {img_name}: Checking cancel after landscape...")
+                logger.info(f"[PREVIEW] {img_name}: Checking cancel after landscape...")
                 if self._cancel_preview_generation:
-                    print(f"[PREVIEW] {img_name}: cancelled after landscape, skipping portrait")
+                    logger.info(f"[PREVIEW] {img_name}: cancelled after landscape, skipping portrait")
                     with self._preview_generation_lock:
                         self.preview_dirty.discard(idx)
                     continue
                 
-                print(f"[PREVIEW] {img_name}: Aligning portrait...")
+                logger.info(f"[PREVIEW] {img_name}: Aligning portrait...")
                 try:
                     success = self._align_single_image_threaded(
                         idx, self.image_files[idx], focal,
                         self.preview_portrait_folder, "portrait", timeout=30)
                     if not success:
-                        print(f"[PREVIEW] {img_name}: Portrait skipped due to timeout/error")
+                        logger.info(f"[PREVIEW] {img_name}: Portrait skipped due to timeout/error")
                 except Exception as e:
-                    print(f"[PREVIEW] {img_name}: Portrait error: {e}")
+                    logger.warning(f"[PREVIEW] {img_name}: Portrait error: {e}")
                 
-                print(f"[PREVIEW] {img_name}: Marking complete...")
+                logger.info(f"[PREVIEW] {img_name}: Marking complete...")
                 with self._preview_generation_lock:
                     self.preview_dirty.discard(idx)
                 
                 processed += 1
-                print(f"[PREVIEW] {img_name}: Done, processed={processed}")
+                logger.info(f"[PREVIEW] {img_name}: Done, processed={processed}")
                 
                 if progress_callback:
                     img_name = self.image_files[idx].name if idx < len(self.image_files) else ""
                     progress_callback(processed, total, img_name)
             
-            print(f"[PREVIEW] Loop complete, saving focal points...")
+            logger.info(f"[PREVIEW] Loop complete, saving focal points...")
             self.save_focal_points()
-            print(f"[PREVIEW] Saving complete, calling final callback...")
+            logger.info(f"[PREVIEW] Saving complete, calling final callback...")
             if progress_callback:
                 progress_callback(-1, total, "")
-            print(f"[PREVIEW] Finished")
+            logger.info(f"[PREVIEW] Finished")
         
         self._cancel_preview_generation = False
         thread = threading.Thread(target=background_task)
@@ -623,12 +637,12 @@ class FocalPointAlignerCore:
                 cv2.imwrite(str(output_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 return True
             
+            h, w = img.shape[:2]
             if focal is None:
-                h, w = img.shape[:2]
                 focal = (w / 2, h / 2)
             
             crop_x, crop_y, scale, crop_w, crop_h = calculate_transformation(
-                focal_x, focal_y, w, h, target_w, target_h
+                focal[0], focal[1], w, h, self.target_width, self.target_height
             )
             
             scaled_w = int(w * scale)
@@ -646,8 +660,8 @@ class FocalPointAlignerCore:
             
             aligned = scaled[src_y:src_y + src_h, src_x:src_x + src_w]
             
-            if aligned.shape[0] != target_h or aligned.shape[1] != target_w:
-                aligned = cv2.resize(aligned, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+            if aligned.shape[0] != self.target_height or aligned.shape[1] != self.target_width:
+                aligned = cv2.resize(aligned, (self.target_width, self.target_height), interpolation=cv2.INTER_LANCZOS4)
             
             output_folder.mkdir(parents=True, exist_ok=True)
             output_name = f"{idx:04d}.jpg"
@@ -663,28 +677,28 @@ class FocalPointAlignerCore:
         
         def target():
             try:
-                print(f"[THREAD] Starting align_single_image for {img_file.name} ({orientation})")
+                logger.info(f"[THREAD] Starting align_single_image for {img_file.name} ({orientation})")
                 self.align_single_image(idx, img_file, focal, output_folder, orientation)
-                print(f"[THREAD] Completed align_single_image for {img_file.name} ({orientation})")
+                logger.info(f"[THREAD] Completed align_single_image for {img_file.name} ({orientation})")
             except Exception as e:
                 result['error'] = str(e)
-                print(f"[THREAD] Exception in align_single_image for {img_file.name}: {e}")
+                logger.warning(f"[THREAD] Exception in align_single_image for {img_file.name}: {e}")
         
-        print(f"[THREAD] Starting thread for {img_file.name} ({orientation})...")
+        logger.info(f"[THREAD] Starting thread for {img_file.name} ({orientation})...")
         thread = threading.Thread(target=target)
         thread.daemon = True
         thread.start()
-        print(f"[THREAD] Waiting for thread to complete (timeout={timeout}s)...")
+        logger.info(f"[THREAD] Waiting for thread to complete (timeout={timeout}s)...")
         thread.join(timeout)
         
         if thread.is_alive():
-            print(f"[THREAD] WARNING: Thread timed out for {img_file.name} ({orientation})")
+            logger.warning(f"[THREAD] WARNING: Thread timed out for {img_file.name} ({orientation})")
             result['success'] = False
         elif result['error']:
-            print(f"[THREAD] Error in thread for {img_file.name}: {result['error']}")
+            logger.warning(f"[THREAD] Error in thread for {img_file.name}: {result['error']}")
             result['success'] = False
         else:
-            print(f"[THREAD] Thread succeeded for {img_file.name} ({orientation})")
+            logger.info(f"[THREAD] Thread succeeded for {img_file.name} ({orientation})")
         
         return result['success']
     

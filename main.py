@@ -48,6 +48,14 @@ class FocalPointAlignerApp(QApplication):
         self.opener.start_clicked.connect(self.on_start_clicked)
         self.opener.show()
     
+    def start_with_config(self, config):
+        """Start directly with aligner screen using provided config."""
+        self.current_config = config
+        self.aligner_screen = AlignerScreen(config)
+        self.aligner_screen.aligner_finished.connect(self.on_aligner_finished)
+        self.aligner_screen.quit_requested.connect(self.on_aligner_finished)
+        self.aligner_screen.show()
+    
     def on_start_clicked(self, config: dict):
         """Handle start button click from opener."""
         self.current_config = config
@@ -78,6 +86,12 @@ class FocalPointAlignerApp(QApplication):
 
 def main():
     """Main entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Focal Point Aligner GUI")
+    parser.add_argument('--config', type=str, help='Path to config.json to skip opener screen')
+    args = parser.parse_args()
+    
     logger.info("=== Focal Point Aligner starting ===")
     app = FocalPointAlignerApp()
     
@@ -94,7 +108,18 @@ def main():
     
     sys.excepthook = exception_hook
     
-    app.start()
+    if args.config:
+        import json
+        from pathlib import Path
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"Error: Config file not found: {args.config}", file=sys.stderr)
+            sys.exit(1)
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        app.start_with_config(config)
+    else:
+        app.start()
     
     return app.exec()
 
