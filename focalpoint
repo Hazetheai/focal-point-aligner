@@ -1,0 +1,27 @@
+#!/bin/bash
+# FocalPointAligner CLI Wrapper
+# Allows running the CLI without activating the conda environment
+# Uses the "sharp" conda environment at /opt/miniconda3/envs/sharp/
+
+# Path to the conda environment with PyQt6, opencv-python, numpy
+CONDA_ENV_PATH="/opt/miniconda3/envs/sharp"
+
+if [ ! -f "$CONDA_ENV_PATH/bin/python3" ]; then
+    echo "Error: Python not found at $CONDA_ENV_PATH/bin/python3"
+    echo "Please install the required packages in this environment:"
+    echo "  pip install -r requirements.txt"
+    exit 1
+fi
+
+# Verify packages are installed
+if ! "$CONDA_ENV_PATH/bin/python3" -c "import PyQt6, cv2, numpy" 2>/dev/null; then
+    echo "Error: Required packages (PyQt6, opencv-python, numpy) not found in $CONDA_ENV_PATH"
+    echo "Please run: $CONDA_ENV_PATH/bin/pip install -r requirements.txt"
+    exit 1
+fi
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Run the CLI with the conda environment's Python
+"$CONDA_ENV_PATH/bin/python3" "$SCRIPT_DIR/cli.py" "$@"

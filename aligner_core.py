@@ -159,6 +159,9 @@ class FocalPointAlignerCore:
             if f.is_file() and f.suffix.lower() in extensions
         ])
         
+        self.invalid_images = set()
+        self._validate_and_discard_images()
+        
         if not self.image_files:
             raise ValueError(f"No images found in {self.input_folder}")
         
@@ -267,6 +270,60 @@ class FocalPointAlignerCore:
                     self.current_idx = 0
             except Exception as e:
                 logger.warning(f"Warning: Could not load focal points: {e}")
+    
+    def _validate_and_discard_images(self):
+        """Validate all images and discard invalid ones.
+        
+        Moves invalid images to discarded/invalid/ subfolder.
+        Adjusts image_files list and index tracking.
+        """
+        if not self.image_files:
+            return
+        
+        invalid_indices = []
+        
+        for idx, img_file in enumerate(self.image_files):
+            img, load_method = load_image_safely(img_file)
+            
+            if img is None:
+                logger.warning(f"[VALIDATE] Invalid image (cannot load): {img_file.name}")
+                invalid_indices.append(idx)
+                self.invalid_images.add(img_file.name)
+                continue
+            
+            if img.size == 0:
+                logger.warning(f"[VALIDATE] Invalid image (zero size): {img_file.name}")
+                invalid_indices.append(idx)
+                self.invalid_images.add(img_file.name)
+                continue
+            
+            h, w = img.shape[:2]
+            if h <= 0 or w <= 0:
+                logger.warning(f"[VALIDATE] Invalid image (invalid dimensions {w}x{h}): {img_file.name}")
+                invalid_indices.append(idx)
+                self.invalid_images.add(img_file.name)
+                continue
+        
+        if not invalid_indices:
+            logger.info(f"[VALIDATE] All {len(self.image_files)} images are valid")
+            return
+        
+        logger.info(f"[VALIDATE] Found {len(invalid_indices)} invalid images, moving to discarded/invalid/")
+        
+        invalid_folder = self.input_folder / "discarded" / "invalid"
+        invalid_folder.mkdir(parents=True, exist_ok=True)
+        
+        for idx in reversed(invalid_indices):
+            img_file = self.image_files[idx]
+            dest = invalid_folder / img_file.name
+            
+            if img_file.exists():
+                shutil.move(str(img_file), str(dest))
+                logger.info(f"[VALIDATE] Moved invalid image to: {dest}")
+        
+        self.image_files = [f for i, f in enumerate(self.image_files) if i not in invalid_indices]
+        
+        logger.info(f"[VALIDATE] After validation: {len(self.image_files)} valid images remain")
     
     def save_focal_points(self):
         stale_indices = [idx for idx in self.focal_points.keys() if idx >= len(self.image_files)]

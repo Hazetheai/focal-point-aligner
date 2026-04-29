@@ -1,0 +1,27 @@
+{
+  "unknown": {
+    "versionFramework": "4.34.0",
+    "dashboard": {
+      "isEnabledForService": false,
+      "requiredAuthentication": false,
+      "orgFeaturesInUse": null,
+      "orgObservabilityIntegrations": null,
+      "serviceAppId": null,
+      "serviceProvider": null,
+      "instanceParameters": null
+    },
+    "command": [
+      "mcp"
+    ],
+    "options": {},
+    "orgId": "32ecef79-391e-4077-9bb4-732a5bdb2111",
+    "orgName": "stefario",
+    "userId": "gpC6tQ3nSV7xNRHbTr",
+    "userName": "stefario",
+    "serviceProviderAwsCfStackId": null,
+    "serviceProviderAwsCfStackCreated": null,
+    "serviceProviderAwsCfStackUpdated": null,
+    "serviceProviderAwsCfStackStatus": null,
+    "serviceProviderAwsCfStackOutputs": null
+  }
+}

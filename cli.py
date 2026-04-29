@@ -77,6 +77,7 @@ def cmd_init(args):
         "input_folder": str(core.input_folder),
         "output_folder": str(core.output_folder),
         "total_images": core.total_images,
+        "invalid_images": len(core.invalid_images) if hasattr(core, 'invalid_images') else 0,
         "target_width": core.target_width,
         "target_height": core.target_height,
     }, args.json)
