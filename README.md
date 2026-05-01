@@ -175,6 +175,16 @@ Run CLI tests with pytest:
 pytest tests/test_cli.py -v
 ```
 
+## Mouse Shortcuts (GUI - Original Tab Only)
+
+| Click | Action |
+|------|--------|
+| Left single-click | Set pending focal point |
+| Left double-click | Save focal point and advance to next |
+| Right single-click | Set center as pending focal |
+| Right double-click | Set center + save + advance |
+| Middle-click | Discard image (with toast notification) |
+
 ## Batch Processing (Legacy)
 
 For batch processing without the interactive GUI, use:

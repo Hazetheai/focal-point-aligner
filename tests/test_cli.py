@@ -5,8 +5,9 @@ import sys
 from pathlib import Path
 import shutil
 import tempfile
+import os
 
-PROJECT_DIR = "/Users/jakeriordan/Library/CloudStorage/Dropbox/_projects/ceangailte/software/scripts/scraping/FocalPointAligner/"
+PROJECT_DIR = Path(__file__).parent.parent.resolve()
 
 @pytest.fixture
 def temp_image_dir(tmp_path):
