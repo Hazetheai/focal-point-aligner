@@ -69,12 +69,9 @@ class AlignerScreen(QWidget):
         screen = self.screen()
         if screen:
             screen_geometry = screen.availableGeometry()
-            max_width = int(screen_geometry.width() * 0.95)
-            max_height = int(screen_geometry.height() * 0.95)
-            self.setMaximumSize(max_width, max_height)
             new_width = int(screen_geometry.width() * 0.9)
             new_height = int(screen_geometry.height() * 0.9)
-            self.resize(new_width, new_height)
+            self.setFixedSize(new_width, new_height)
         else:
             self.setFixedSize(1440, 1440)
         
@@ -97,6 +94,8 @@ class AlignerScreen(QWidget):
         self._setup_shortcuts()
         
         self._show_original_mode()
+        
+        self.setFocus()
     
     def _create_original_content(self):
         """Create the 3-column layout for Original mode."""
@@ -113,6 +112,10 @@ class AlignerScreen(QWidget):
         self._main_image = ImageDisplayWidget()
         self._main_image.setFixedSize(col_width, col_height)
         self._main_image.focal_point_clicked.connect(self._on_focal_clicked)
+        self._main_image.double_left_click.connect(self._on_double_click_save)
+        self._main_image.set_center_pending.connect(self._on_center_pending)
+        self._main_image.double_center_save.connect(self._on_double_center_save)
+        self._main_image.discard_requested.connect(self._on_middle_discard)
         
         self._next_thumbnail = ThumbnailWidget("END")
         self._next_thumbnail.setFixedSize(col_width, col_height)
@@ -507,14 +510,20 @@ class AlignerScreen(QWidget):
         prev_img, prev_focal = self.aligner.get_prev_image()
         logger.info(f"_load_original_images: prev_img={'not None' if prev_img is not None else 'None'}")
         if prev_img is not None:
-            self._prev_thumbnail.set_image(prev_img, prev_focal is not None)
+            prev_coords = self.aligner.get_prev_focal()
+            fx = prev_coords[0] if prev_coords else None
+            fy = prev_coords[1] if prev_coords else None
+            self._prev_thumbnail.set_image(prev_img, fx, fy)
         else:
             self._prev_thumbnail.set_image(None)
         
         next_img, next_focal = self.aligner.get_next_image()
         logger.info(f"_load_original_images: next_img={'not None' if next_img is not None else 'None'}")
         if next_img is not None:
-            self._next_thumbnail.set_image(next_img, next_focal is not None)
+            next_coords = self.aligner.get_next_focal()
+            fx = next_coords[0] if next_coords else None
+            fy = next_coords[1] if next_coords else None
+            self._next_thumbnail.set_image(next_img, fx, fy)
         else:
             self._next_thumbnail.set_image(None)
     
@@ -608,6 +617,78 @@ class AlignerScreen(QWidget):
         self._update_header()
         
         logger.debug(f"AlignerScreen: Updated header, pending_focal={self._pending_focal}")
+    
+    def _on_double_click_save(self):
+        """Handle double left click - save focal point and advance to next image."""
+        logger.info("AlignerScreen: _on_double_click_save called")
+        
+        if self._current_tab != 0:
+            return
+        
+        self._on_save_and_next()
+    
+    def _on_center_pending(self, x, y):
+        """Handle right single click - set center as pending focal point."""
+        logger.info(f"AlignerScreen: _on_center_pending called with ({x:.1f}, {y:.1f})")
+        
+        if self._current_tab != 0:
+            return
+        
+        self._pending_focal = (x, y)
+        self._main_image.set_focal_point(x, y, is_pending=True)
+        self._update_header()
+    
+    def _on_double_center_save(self, x, y):
+        """Handle right double click - set center, save and advance."""
+        logger.info(f"AlignerScreen: _on_double_center_save called with ({x:.1f}, {y:.1f})")
+        
+        if self._current_tab != 0:
+            return
+        
+        self._pending_focal = (x, y)
+        self._main_image.set_focal_point(x, y, is_pending=True)
+        self._update_header()
+        self._on_save_and_next()
+    
+    def _on_middle_discard(self):
+        """Handle middle click - discard current image."""
+        logger.info("AlignerScreen: _on_middle_discard called")
+        
+        if self._current_tab != 0:
+            return
+        
+        if self.aligner.total_images <= 1:
+            self._show_toast("Cannot discard last image")
+            return
+        
+        filename = self.aligner.get_current_filename()
+        self._on_discard()
+        self._show_toast(f"Discarded: {filename}")
+    
+    def _show_toast(self, message, duration=2000):
+        """Show a toast notification that auto-dismisses."""
+        toast = QLabel(message, self)
+        toast.setStyleSheet("""
+            QLabel {
+                background-color: #3D3D5C;
+                color: #FFFFFF;
+                padding: 12px 24px;
+                border-radius: 8px;
+                font-size: 14px;
+            }
+        """)
+        toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        toast.adjustSize()
+        
+        x = (self.width() - toast.width()) // 2
+        y = self.height() - toast.height() - 50
+        toast.move(x, y)
+        
+        toast.show()
+        
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(duration, toast.deleteLater)
     
     def _show_preview_modal(self, total):
         self._preview_modal = QDialog(self)

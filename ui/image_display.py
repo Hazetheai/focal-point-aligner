@@ -25,13 +25,17 @@ class ImageDisplayWidget(QLabel):
     """
     
     focal_point_clicked = pyqtSignal(float, float)
+    double_left_click = pyqtSignal()
+    set_center_pending = pyqtSignal(float, float)
+    double_center_save = pyqtSignal(float, float)
+    discard_requested = pyqtSignal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         
         self._image = None
         self._pixmap = None
@@ -43,6 +47,9 @@ class ImageDisplayWidget(QLabel):
         self._original_height = 0
         
         self._displayed_pixmap_rect = None
+        
+        self._last_click_time = 0
+        self._last_click_button = None
         
         self.setStyleSheet("""
             ImageDisplayWidget {
@@ -203,15 +210,52 @@ class ImageDisplayWidget(QLabel):
         logger.info(f"ImageDisplayWidget.mousePressEvent: button={event.button()}, pos=({event.position().x():.1f}, {event.position().y():.1f})")
         logger.info(f"ImageDisplayWidget.mousePressEvent: displayed_rect={self._displayed_pixmap_rect}")
         
-        if event.button() == Qt.MouseButton.LeftButton:
-            pos = self.get_click_position(event)
-            logger.info(f"ImageDisplayWidget.mousePressEvent: converted position = {pos}")
-            
-            if pos is not None:
-                logger.info(f"ImageDisplayWidget.mousePressEvent: Emitting focal_point_clicked with ({pos[0]:.1f}, {pos[1]:.1f})")
-                self.focal_point_clicked.emit(pos[0], pos[1])
+        import time
+        current_time = time.time()
+        DOUBLE_CLICK_INTERVAL = 0.4
+        
+        button = event.button()
+        
+        if button == Qt.MouseButton.LeftButton:
+            if self._last_click_button == Qt.MouseButton.LeftButton and \
+               current_time - self._last_click_time < DOUBLE_CLICK_INTERVAL:
+                logger.info("ImageDisplayWidget.mousePressEvent: Double left click detected")
+                self._last_click_button = None
+                self._last_click_time = 0
+                self.double_left_click.emit()
             else:
-                logger.warning("ImageDisplayWidget.mousePressEvent: Click position is None (outside image area)")
+                pos = self.get_click_position(event)
+                logger.info(f"ImageDisplayWidget.mousePressEvent: converted position = {pos}")
+                self._last_click_button = button
+                self._last_click_time = current_time
+                
+                if pos is not None:
+                    logger.info(f"ImageDisplayWidget.mousePressEvent: Emitting focal_point_clicked with ({pos[0]:.1f}, {pos[1]:.1f})")
+                    self.focal_point_clicked.emit(pos[0], pos[1])
+                else:
+                    logger.warning("ImageDisplayWidget.mousePressEvent: Click position is None (outside image area)")
+        
+        elif button == Qt.MouseButton.RightButton:
+            if self._last_click_button == Qt.MouseButton.RightButton and \
+               current_time - self._last_click_time < DOUBLE_CLICK_INTERVAL:
+                logger.info("ImageDisplayWidget.mousePressEvent: Double right click detected")
+                self._last_click_button = None
+                self._last_click_time = 0
+                center_x = self._original_width / 2
+                center_y = self._original_height / 2
+                logger.info(f"ImageDisplayWidget.mousePressEvent: Emitting double_center_save with ({center_x:.1f}, {center_y:.1f})")
+                self.double_center_save.emit(float(center_x), float(center_y))
+            else:
+                center_x = self._original_width / 2
+                center_y = self._original_height / 2
+                self._last_click_button = button
+                self._last_click_time = current_time
+                logger.info(f"ImageDisplayWidget.mousePressEvent: Emitting set_center_pending with ({center_x:.1f}, {center_y:.1f})")
+                self.set_center_pending.emit(float(center_x), float(center_y))
+        
+        elif button == Qt.MouseButton.MiddleButton:
+            logger.info("ImageDisplayWidget.mousePressEvent: Middle click detected")
+            self.discard_requested.emit()
         
         super().mousePressEvent(event)
     

@@ -212,8 +212,8 @@ class EndMenu(QDialog):
         def do_export():
             total = self.aligner.total_images
             for i in range(total):
-                src = preview_folder / f"{i + 1:04d}.jpg"
-                dst = self._output_folder / f"{i + 1:04d}.jpg"
+                src = preview_folder / f"{i:04d}.jpg"
+                dst = self._output_folder / f"{i:04d}.jpg"
                 if src.exists():
                     shutil.copy2(src, dst)
                 self.progress_bar.setValue(i + 1)

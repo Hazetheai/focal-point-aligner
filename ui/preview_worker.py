@@ -94,6 +94,6 @@ class PreviewWorker(QThread):
             if aligned.shape[0] != crop_h or aligned.shape[1] != crop_w:
                 aligned = cv2.resize(aligned, (crop_w, crop_h), interpolation=cv2.INTER_LANCZOS4)
         
-        output_name = f"{idx + 1:04d}.jpg"
+        output_name = f"{idx:04d}.jpg"
         output_path = output_folder / output_name
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 90])

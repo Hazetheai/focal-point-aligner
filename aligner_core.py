@@ -410,6 +410,20 @@ class FocalPointAlignerCore:
                 return img, self.focal_points.get(next_idx)
         return None, None
     
+    def get_prev_focal(self):
+        """Get focal point coordinates for previous image."""
+        prev_idx = self.current_idx - 1
+        if prev_idx >= 0:
+            return self.focal_points.get(prev_idx)
+        return None
+    
+    def get_next_focal(self):
+        """Get focal point coordinates for next image."""
+        next_idx = self.current_idx + 1
+        if next_idx < len(self.image_files):
+            return self.focal_points.get(next_idx)
+        return None
+    
     def get_preview_image(self, orientation="landscape"):
         """Load preview image for current index."""
         folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
@@ -682,6 +696,14 @@ class FocalPointAlignerCore:
         
         Returns True if successful, False otherwise.
         """
+        # Use swapped dimensions for portrait orientation
+        if orientation == "portrait":
+            target_w = self.target_height
+            target_h = self.target_width
+        else:
+            target_w = self.target_width
+            target_h = self.target_height
+        
         try:
             img, load_method = load_image_safely(img_file)
             if img is None:
@@ -690,7 +712,7 @@ class FocalPointAlignerCore:
                 output_folder.mkdir(parents=True, exist_ok=True)
                 output_name = f"{idx:04d}.jpg"
                 output_path = output_folder / output_name
-                placeholder = np.full((self.target_height, self.target_width, 3), 128, dtype=np.uint8)
+                placeholder = np.full((target_h, target_w, 3), 128, dtype=np.uint8)
                 cv2.imwrite(str(output_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 return True
             
@@ -699,7 +721,7 @@ class FocalPointAlignerCore:
                 focal = (w / 2, h / 2)
             
             crop_x, crop_y, scale, crop_w, crop_h = calculate_transformation(
-                focal[0], focal[1], w, h, self.target_width, self.target_height
+                focal[0], focal[1], w, h, target_w, target_h
             )
             
             scaled_w = int(w * scale)
@@ -717,8 +739,8 @@ class FocalPointAlignerCore:
             
             aligned = scaled[src_y:src_y + src_h, src_x:src_x + src_w]
             
-            if aligned.shape[0] != self.target_height or aligned.shape[1] != self.target_width:
-                aligned = cv2.resize(aligned, (self.target_width, self.target_height), interpolation=cv2.INTER_LANCZOS4)
+            if aligned.shape[0] != target_h or aligned.shape[1] != target_w:
+                aligned = cv2.resize(aligned, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
             
             output_folder.mkdir(parents=True, exist_ok=True)
             output_name = f"{idx:04d}.jpg"
@@ -1158,6 +1180,12 @@ class FocalPointAlignerCore:
         self.current_idx = 0
         self.alignment_mode = None
         self.save_focal_points()
+    
+    def cleanup_preview_folders(self):
+        """Remove preview folders after export."""
+        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
+            if folder and folder.exists():
+                shutil.rmtree(folder)
     
     def _migrate_preview_naming(self):
         """Migrate from 1-based to 0-based preview naming."""

@@ -25,7 +25,7 @@ class ThumbnailWidget(QLabel):
         self.label_text = label_text
         
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setStyleSheet("""
             QLabel {
                 background-color: #2D2D44;
@@ -36,13 +36,15 @@ class ThumbnailWidget(QLabel):
         
         self._pixmap = None
         self._display_scale = 1.0
-        self._has_focal = False
+        self._focal_x = None
+        self._focal_y = None
         
         self._update_display()
     
-    def set_image(self, cv_image, has_focal=False):
+    def set_image(self, cv_image, focal_x=None, focal_y=None):
         """Set the thumbnail image (OpenCV format)."""
-        self._has_focal = has_focal
+        self._focal_x = focal_x
+        self._focal_y = focal_y
         
         if cv_image is None:
             self._pixmap = None
@@ -97,17 +99,21 @@ class ThumbnailWidget(QLabel):
         if pix_w == 0 or pix_h == 0:
             return
         
-        # Simple scale to fit within available space while maintaining aspect ratio
         scaled_pixmap = self._pixmap.scaled(available_width, available_height,
                                             Qt.AspectRatioMode.KeepAspectRatio,
                                             Qt.TransformationMode.SmoothTransformation)
         
-        if self._has_focal:
+        if self._focal_x is not None and self._focal_y is not None:
             painter = QPainter(scaled_pixmap)
             painter.setPen(QPen(QColor(0, 255, 100), 3))
             painter.setBrush(QColor(0, 255, 100))
-            cx, cy = scaled_pixmap.width() // 2, scaled_pixmap.height() // 2
-            painter.drawEllipse(cx - 8, cy - 8, 16, 16)
+            
+            scale_x = scaled_pixmap.width() / pix_w
+            scale_y = scaled_pixmap.height() / pix_h
+            draw_x = self._focal_x * scale_x
+            draw_y = self._focal_y * scale_y
+            
+            painter.drawEllipse(int(draw_x - 8), int(draw_y - 8), 16, 16)
             painter.end()
         
         self.setPixmap(scaled_pixmap)
