@@ -167,9 +167,17 @@ class AlignerScreen(QWidget):
         
         if self.aligner.move_image(from_index, to_index):
             self.aligner.save_focal_points()
-            self._arrange_grid._build_grid()
             self._update_nav_dots()
-            logger.info(f"[ARRANGE] Reorder complete")
+            logger.info(f"[ARRANGE] Reorder complete, deferring grid rebuild")
+            QTimer.singleShot(0, self._rebuild_arrange_grid)
+    
+    def _rebuild_arrange_grid(self):
+        """Rebuild the arrange grid after a reorder - called deferred."""
+        try:
+            self._arrange_grid._build_grid()
+            logger.info("[ARRANGE] Grid rebuilt")
+        except RuntimeError:
+            logger.warning("[ARRANGE] Grid rebuild failed - widgets deleted")
     
     def _show_original_mode(self):
         """Show original mode UI elements."""
