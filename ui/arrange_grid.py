@@ -195,6 +195,7 @@ class ArrangeGridWidget(QWidget):
         self._drop_target_index = -1
         self._drop_target_position = None
         self._drag_in_progress = False
+        self._is_building_grid = False
         
         self.setAcceptDrops(True)
         
@@ -202,6 +203,11 @@ class ArrangeGridWidget(QWidget):
     
     def _build_grid(self):
         """Rebuild the grid from current image order."""
+        if self._is_building_grid:
+            return
+        
+        self._is_building_grid = True
+        
         for i in reversed(range(self._layout.count())):
             item = self._layout.takeAt(i)
             if item.widget():
@@ -211,6 +217,7 @@ class ArrangeGridWidget(QWidget):
         
         total = len(self.aligner.image_files)
         if total == 0:
+            self._is_building_grid = False
             return
         
         cols = self._calculate_columns()
@@ -236,6 +243,7 @@ class ArrangeGridWidget(QWidget):
             self._layout.addWidget(thumb, row, col)
         
         self._update_grid_size()
+        self._is_building_grid = False
     
     def _calculate_columns(self):
         """Calculate columns to fit available width."""
