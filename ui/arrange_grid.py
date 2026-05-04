@@ -86,7 +86,11 @@ class ArrangeThumbnailWidget(QWidget):
     
     def paintEvent(self, event):
         """Paint the thumbnail image and focal point."""
-        super().paintEvent(event)
+        try:
+            super().paintEvent(event)
+        except RuntimeError as e:
+            logger.warning(f"[ARRANGE] paintEvent RuntimeError (widget deleted): {e}")
+            return
         
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -153,6 +157,8 @@ class ArrangeThumbnailWidget(QWidget):
     
     def _start_drag(self):
         """Start the drag operation."""
+        logger.info(f"[ARRANGE] _start_drag called for index {self.index}")
+        
         self._is_being_dragged = True
         self.update()
         
@@ -165,13 +171,16 @@ class ArrangeThumbnailWidget(QWidget):
         drag.setPixmap(pixmap)
         drag.setHotSpot(QPoint(40, 40))
         
+        logger.info(f"[ARRANGE] _start_drag: calling drag.exec()")
         drag.exec(Qt.DropAction.MoveAction)
+        
+        logger.info(f"[ARRANGE] _start_drag: drag.exec() returned")
         
         try:
             self._is_being_dragged = False
             self.update()
-        except RuntimeError:
-            pass
+        except RuntimeError as e:
+            logger.warning(f"[ARRANGE] _start_drag: RuntimeError after drag.exec(): {e}")
 
 
 class ArrangeGridWidget(QWidget):
@@ -203,22 +212,32 @@ class ArrangeGridWidget(QWidget):
     
     def _build_grid(self):
         """Rebuild the grid from current image order."""
+        logger.info(f"[ARRANGE] _build_grid called, _is_building_grid={self._is_building_grid}, _drag_in_progress={self._drag_in_progress}")
+        
         if self._is_building_grid:
+            logger.info("[ARRANGE] _build_grid: already building, returning")
             return
         
         self._is_building_grid = True
         
+        logger.info(f"[ARRANGE] _build_grid: removing {self._layout.count()} widgets from layout")
+        
+        old_thumbnails = list(self._thumbnails)
+        
         for i in reversed(range(self._layout.count())):
             item = self._layout.takeAt(i)
             if item.widget():
-                item.widget().deleteLater()
+                item.widget().setParent(None)
         
         self._thumbnails.clear()
         
         total = len(self.aligner.image_files)
         if total == 0:
+            logger.info("[ARRANGE] _build_grid: no images, returning")
             self._is_building_grid = False
             return
+        
+        logger.info(f"[ARRANGE] _build_grid: building {total} thumbnails")
         
         cols = self._calculate_columns()
         preview_folder = self.aligner.get_preview_folder(self._orientation)
@@ -244,6 +263,7 @@ class ArrangeGridWidget(QWidget):
         
         self._update_grid_size()
         self._is_building_grid = False
+        logger.info(f"[ARRANGE] _build_grid: complete, created {len(self._thumbnails)} thumbnails")
     
     def _calculate_columns(self):
         """Calculate columns to fit available width."""
@@ -364,11 +384,15 @@ class ArrangeGridWidget(QWidget):
     
     def dropEvent(self, event):
         """Handle drop - reorder images."""
+        logger.info("[ARRANGE] dropEvent called")
+        
         if not event.mimeData().hasText():
+            logger.info("[ARRANGE] dropEvent: no mime data, returning")
             return
         
         source_idx = int(event.mimeData().text())
         to_idx = -1
+        logger.info(f"[ARRANGE] dropEvent: source_idx={source_idx}, _drop_target_index={self._drop_target_index}")
         
         try:
             if self._drop_target_index >= 0 and self._drop_target_index < len(self._thumbnails):
@@ -385,10 +409,15 @@ class ArrangeGridWidget(QWidget):
                     if source_idx < to_idx:
                         to_idx -= 1
                     
-                    logger.info(f"ArrangeGridWidget: Moving from {source_idx} to {to_idx}")
-        except RuntimeError:
+                    logger.info(f"[ARRANGE] dropEvent: calculated to_idx={to_idx}, emitting signal")
+        except RuntimeError as e:
+            logger.error(f"[ARRANGE] dropEvent RuntimeError: {e}")
+            to_idx = -1
+        except Exception as e:
+            logger.error(f"[ARRANGE] dropEvent Exception: {type(e).__name__}: {e}")
             to_idx = -1
         
+        logger.info(f"[ARRANGE] dropEvent: clearing indicators")
         self._clear_all_indicators()
         self._drop_target_index = -1
         self._drop_target_position = None
@@ -396,6 +425,7 @@ class ArrangeGridWidget(QWidget):
         self._drag_in_progress = False
         
         if to_idx >= 0:
+            logger.info(f"[ARRANGE] dropEvent: emitting images_reordered signal for {source_idx} -> {to_idx}")
             QTimer.singleShot(0, lambda: self.images_reordered.emit(source_idx, to_idx))
         
         event.acceptProposedAction()
