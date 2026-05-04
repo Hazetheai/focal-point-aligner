@@ -7,11 +7,10 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel,
-    QProgressBar, QDialog, QPushButton, QSizePolicy, QFrame
+    QProgressBar, QDialog, QPushButton, QSizePolicy, QFrame, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMetaObject, Q_ARG
 from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence
-from PyQt6.QtWidgets import QSizePolicy
 
 import cv2
 
