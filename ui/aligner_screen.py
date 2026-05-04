@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel,
-    QProgressBar, QDialog, QPushButton
+    QProgressBar, QDialog, QPushButton, QSizePolicy, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMetaObject, Q_ARG
 from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence
@@ -26,6 +26,7 @@ from ui.navigation_dots import NavigationDotsWidget
 from ui.preview_worker import PreviewWorker
 from ui.logger import logger
 from ui.end_menu import EndMenu
+from ui.arrange_grid import ArrangeGridWidget
 
 
 class AlignerScreen(QWidget):
@@ -65,13 +66,11 @@ class AlignerScreen(QWidget):
         
         self.setWindowTitle("Focal Point Aligner")
         
-        # Get the screen geometry and size to 90% of available screen
+        # Get the screen geometry and use full available screen
         screen = self.screen()
         if screen:
             screen_geometry = screen.availableGeometry()
-            new_width = int(screen_geometry.width() * 0.9)
-            new_height = int(screen_geometry.height() * 0.9)
-            self.setFixedSize(new_width, new_height)
+            self.setFixedSize(screen_geometry.width(), screen_geometry.height())
         else:
             self.setFixedSize(1440, 1440)
         
@@ -87,6 +86,7 @@ class AlignerScreen(QWidget):
         self._create_tabs(layout)
         self._create_original_content()
         self._create_preview_content()
+        self._create_arrange_content()
         self._create_navigation_dots(layout)
         self._create_footer(layout)
         
@@ -139,6 +139,38 @@ class AlignerScreen(QWidget):
         preview_layout.addWidget(self._preview_image, 1)
         
         self._preview_tab.setLayout(preview_layout)
+    
+    def _create_arrange_content(self):
+        """Create the Arrange tab with scrollable grid."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                background-color: #1E1E2E;
+                border: none;
+            }
+        """)
+        
+        self._arrange_grid = ArrangeGridWidget(self.aligner)
+        self._arrange_grid.images_reordered.connect(self._on_arrange_reorder)
+        
+        scroll.setWidget(self._arrange_grid)
+        
+        arrange_layout = QVBoxLayout()
+        arrange_layout.setContentsMargins(5, 5, 5, 5)
+        arrange_layout.addWidget(scroll)
+        self._arrange_tab.setLayout(arrange_layout)
+    
+    def _on_arrange_reorder(self, from_index, to_index):
+        """Handle image reordering from Arrange tab."""
+        logger.info(f"[ARRANGE] Reorder from {from_index} to {to_index}")
+        
+        if self.aligner.move_image(from_index, to_index):
+            self.aligner.save_focal_points()
+            self._arrange_grid._build_grid()
+            self._update_nav_dots()
+            logger.info(f"[ARRANGE] Reorder complete")
     
     def _show_original_mode(self):
         """Show original mode UI elements."""
@@ -289,9 +321,11 @@ class AlignerScreen(QWidget):
         
         self._original_tab = QWidget()
         self._preview_tab = QWidget()
+        self._arrange_tab = QWidget()
         
         self._tabs.addTab(self._original_tab, "Original")
         self._tabs.addTab(self._preview_tab, "Preview")
+        self._tabs.addTab(self._arrange_tab, "Arrange")
         
         self._tabs.currentChanged.connect(self._on_tab_changed)
         
@@ -822,7 +856,7 @@ class AlignerScreen(QWidget):
             self._is_preview_mode = False
             self._show_original_mode()
             self._load_current_images()
-        else:
+        elif index == 1:
             self._is_preview_mode = True
             self._show_preview_mode()
             
@@ -845,6 +879,9 @@ class AlignerScreen(QWidget):
             else:
                 logger.info(f"[TAB_CHANGE] Loading preview directly")
                 self._load_preview_images()
+        elif index == 2:
+            logger.info(f"[TAB_CHANGE] Arrange tab selected, building grid...")
+            self._arrange_grid._build_grid()
     
     def _on_dot_clicked(self, idx):
         """Handle dot click navigation."""
