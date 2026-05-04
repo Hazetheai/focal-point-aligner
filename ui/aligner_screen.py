@@ -168,8 +168,8 @@ class AlignerScreen(QWidget):
         if self.aligner.move_image(from_index, to_index):
             self.aligner.save_focal_points()
             self._update_nav_dots()
-            logger.info(f"[ARRANGE] move_image succeeded - data reordered")
-            logger.info(f"[ARRANGE] Visual will update when tab is re-entered")
+            logger.info(f"[ARRANGE] move_image succeeded - rebuilding grid")
+            self._arrange_grid._build_grid()
         else:
             logger.warning(f"[ARRANGE] move_image returned False")
     

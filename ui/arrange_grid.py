@@ -41,11 +41,14 @@ class ArrangeThumbnailWidget(QWidget):
         self._create_pixmap()
         self.setFixedSize(min_size, min_size)
         
-        self.setStyleSheet("""
-            ArrangeThumbnailWidget {
+        self.setStyleSheet(f"""
+            ArrangeThumbnailWidget {{
                 background-color: #2D2D44;
-                border: 1px solid #4D4D64;
-            }
+                border: 2px solid #4D4D64;
+            }}
+            ArrangeThumbnailWidget:hover {{
+                border: 2px solid #00FF64;
+            }}
         """)
     
     def _create_pixmap(self):
