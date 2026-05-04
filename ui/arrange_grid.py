@@ -238,6 +238,7 @@ class ArrangeGridWidget(QWidget):
             return
         
         logger.info(f"[ARRANGE] _build_grid: building {total} thumbnails")
+        logger.info(f"[ARRANGE] _build_grid: image order = {[f.name[:30] for f in self.aligner.image_files[:5]]} ... {[f.name[:30] for f in self.aligner.image_files[-3:]]}")
         
         cols = self._calculate_columns()
         preview_folder = self.aligner.get_preview_folder(self._orientation)
@@ -263,7 +264,7 @@ class ArrangeGridWidget(QWidget):
         
         self._update_grid_size()
         self._is_building_grid = False
-        logger.info(f"[ARRANGE] _build_grid: complete, created {len(self._thumbnails)} thumbnails")
+        logger.info(f"[ARRANGE] _build_grid: complete, positions: grid[0]={self.aligner.image_files[0].name[:40] if self.aligner.image_files else 'N/A'}, grid[1]={self.aligner.image_files[1].name[:40] if len(self.aligner.image_files)>1 else 'N/A'}")
     
     def _calculate_columns(self):
         """Calculate columns to fit available width."""
