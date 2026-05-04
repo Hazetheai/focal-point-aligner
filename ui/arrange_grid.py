@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from PyQt6.QtWidgets import QWidget, QGridLayout, QScrollArea, QFrame, QLabel
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QMimeData
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPoint, QMimeData, QTimer
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QDrag, QCursor
 
 import cv2
@@ -167,8 +167,11 @@ class ArrangeThumbnailWidget(QWidget):
         
         drag.exec(Qt.DropAction.MoveAction)
         
-        self._is_being_dragged = False
-        self.update()
+        try:
+            self._is_being_dragged = False
+            self.update()
+        except RuntimeError:
+            pass
 
 
 class ArrangeGridWidget(QWidget):
@@ -326,17 +329,19 @@ class ArrangeGridWidget(QWidget):
             self._drop_target_index = target_idx
             
             if target_idx >= 0 and target_idx < len(self._thumbnails):
-                thumb = self._thumbnails[target_idx]
-                
-                rect = thumb.geometry()
-                rel_x = pos.x() - rect.x()
-                
-                if rel_x < rect.width() // 2:
-                    thumb.set_drop_indicator("before")
-                    self._drop_target_position = "before"
-                else:
-                    thumb.set_drop_indicator("after")
-                    self._drop_target_position = "after"
+                try:
+                    thumb = self._thumbnails[target_idx]
+                    rect = thumb.geometry()
+                    rel_x = pos.x() - rect.x()
+                    
+                    if rel_x < rect.width() // 2:
+                        thumb.set_drop_indicator("before")
+                        self._drop_target_position = "before"
+                    else:
+                        thumb.set_drop_indicator("after")
+                        self._drop_target_position = "after"
+                except RuntimeError:
+                    self._drop_target_position = None
             else:
                 self._drop_target_position = None
         
@@ -355,23 +360,26 @@ class ArrangeGridWidget(QWidget):
             return
         
         source_idx = int(event.mimeData().text())
+        to_idx = -1
         
-        if self._drop_target_index >= 0 and self._drop_target_index < len(self._thumbnails):
-            target_idx = self._drop_target_index
-            
-            if self._drop_target_position == "before":
-                to_idx = target_idx
-            else:
-                to_idx = target_idx + 1
-            
-            if source_idx != to_idx and source_idx != to_idx - 1:
-                to_idx = max(0, min(to_idx, len(self._thumbnails) - 1))
+        try:
+            if self._drop_target_index >= 0 and self._drop_target_index < len(self._thumbnails):
+                target_idx = self._drop_target_index
                 
-                if source_idx < to_idx:
-                    to_idx -= 1
+                if self._drop_target_position == "before":
+                    to_idx = target_idx
+                else:
+                    to_idx = target_idx + 1
                 
-                logger.info(f"ArrangeGridWidget: Moving from {source_idx} to {to_idx}")
-                self.images_reordered.emit(source_idx, to_idx)
+                if source_idx != to_idx and source_idx != to_idx - 1:
+                    to_idx = max(0, min(to_idx, len(self._thumbnails) - 1))
+                    
+                    if source_idx < to_idx:
+                        to_idx -= 1
+                    
+                    logger.info(f"ArrangeGridWidget: Moving from {source_idx} to {to_idx}")
+        except RuntimeError:
+            to_idx = -1
         
         self._clear_all_indicators()
         self._drop_target_index = -1
@@ -379,17 +387,26 @@ class ArrangeGridWidget(QWidget):
         self._drag_source_index = -1
         self._drag_in_progress = False
         
+        if to_idx >= 0:
+            QTimer.singleShot(0, lambda: self.images_reordered.emit(source_idx, to_idx))
+        
         event.acceptProposedAction()
     
     def _get_target_index(self, pos):
         """Get the target thumbnail index for a position."""
         for idx, thumb in enumerate(self._thumbnails):
-            rect = thumb.geometry()
-            if rect.contains(pos):
-                return idx
+            try:
+                rect = thumb.geometry()
+                if rect.contains(pos):
+                    return idx
+            except RuntimeError:
+                continue
         return -1
     
     def _clear_all_indicators(self):
         """Clear all drop indicators."""
         for thumb in self._thumbnails:
-            thumb.clear_drop_indicator()
+            try:
+                thumb.clear_drop_indicator()
+            except RuntimeError:
+                pass

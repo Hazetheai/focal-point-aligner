@@ -903,42 +903,49 @@ class FocalPointAlignerCore:
         if from_index == to_index or not (0 <= from_index < len(self.image_files)) or not (0 <= to_index < len(self.image_files)):
             return False
         
-        # Move the image file
+        # Move the image file in list
         self.image_files.insert(to_index, self.image_files.pop(from_index))
         
-        # Adjust indices if we moved an item before another
-        if to_index < from_index:
-            to_index += 1  # Compensate for the removal shifting indices down
+        # Rebuild all dictionaries by mapping old indices to new positions
+        # This is simpler: find where each old index ended up in the new list
+        old_to_new = {}
+        for new_idx, path in enumerate(self.image_files):
+            # Find which old index this file came from
+            for old_idx, old_path in enumerate(self.image_files):
+                if old_path == path:
+                    old_to_new[old_idx] = new_idx
+                    break
         
-        # Update focal points dictionary
-        if from_index in self.focal_points:
-            focal_value = self.focal_points.pop(from_index)
-            self.focal_points[to_index] = focal_value
+        # Rebuild focal_points with new indices
+        new_focal = {}
+        new_completed = set()
+        new_auto_center = {}
+        new_dimensions = {}
         
-        # Update completed set
-        if from_index in self.completed:
-            self.completed.remove(from_index)
-            self.completed.add(to_index)
+        for old_idx, focal in self.focal_points.items():
+            new_idx = old_to_new.get(old_idx, old_idx)
+            new_focal[new_idx] = focal
         
-        # Update auto_center_flags
-        if from_index in self.auto_center_flags:
-            flag_value = self.auto_center_flags.pop(from_index)
-            self.auto_center_flags[to_index] = flag_value
+        for old_idx in self.completed:
+            new_idx = old_to_new.get(old_idx, old_idx)
+            new_completed.add(new_idx)
         
-        # Update image_dimensions
-        if from_index in self.image_dimensions:
-            dims_value = self.image_dimensions.pop(from_index)
-            self.image_dimensions[to_index] = dims_value
+        for old_idx, flag in self.auto_center_flags.items():
+            new_idx = old_to_new.get(old_idx, old_idx)
+            new_auto_center[new_idx] = flag
         
-        # Update current index if it was affected by the move
-        if self.current_idx == from_index:
-            self.current_idx = to_index
-        elif self.current_idx == to_index and from_index < to_index:
-            self.current_idx -= 1
-        elif self.current_idx > from_index and self.current_idx <= to_index:
-            self.current_idx -= 1
-        elif self.current_idx >= to_index and self.current_idx < from_index:
-            self.current_idx += 1
+        for old_idx, dims in self.image_dimensions.items():
+            new_idx = old_to_new.get(old_idx, old_idx)
+            new_dimensions[new_idx] = dims
+        
+        self.focal_points = new_focal
+        self.completed = new_completed
+        self.auto_center_flags = new_auto_center
+        self.image_dimensions = new_dimensions
+        
+        # Update current index to follow the image
+        old_current = self.current_idx
+        self.current_idx = old_to_new.get(old_current, old_current)
         
         # Save changes
         self.save_focal_points()

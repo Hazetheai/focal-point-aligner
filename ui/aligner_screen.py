@@ -822,7 +822,13 @@ class AlignerScreen(QWidget):
         if self._preview_current_image_label:
             self._preview_current_image_label.setText("")
         self._hide_preview_modal()
-        self._load_preview_images()
+        
+        if self._current_tab == 1:
+            self._load_preview_images()
+        elif self._current_tab == 2:
+            if hasattr(self, '_arrange_grid'):
+                self._arrange_grid._build_grid()
+        
         self._update_nav_dots()
         self._update_header()
         self._status_label.setText("Previews ready")
@@ -879,10 +885,22 @@ class AlignerScreen(QWidget):
                 logger.info(f"[TAB_CHANGE] Loading preview directly")
                 self._load_preview_images()
         elif index == 2:
-            logger.info(f"[TAB_CHANGE] Arrange tab selected, building grid...")
+            logger.info(f"[TAB_CHANGE] Arrange tab selected")
             if hasattr(self, '_arrange_grid'):
                 self._arrange_grid._orientation = self._preview_orientation
-                self._arrange_grid._build_grid()
+                
+                self.aligner.verify_and_fix_preview_integrity()
+                total, need_count = self.aligner.get_preview_generation_status()
+                
+                if need_count > 0:
+                    logger.info(f"[TAB_CHANGE] Arrange tab: Generating previews, need_count={need_count}")
+                    self._show_preview_modal(total)
+                    self.aligner.prepare_all_previews_async(
+                        progress_callback=self._on_preview_generation_progress
+                    )
+                else:
+                    logger.info(f"[TAB_CHANGE] Arrange tab: Previews exist, building grid")
+                    self._arrange_grid._build_grid()
     
     def _on_dot_clicked(self, idx):
         """Handle dot click navigation."""
