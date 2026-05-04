@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel,
     QProgressBar, QDialog, QPushButton, QSizePolicy, QFrame, QScrollArea
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMetaObject, Q_ARG
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMetaObject, Q_ARG, QTimer
 from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence
 
 import cv2
@@ -727,8 +727,6 @@ class AlignerScreen(QWidget):
         toast.move(x, y)
         
         toast.show()
-        
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(duration, toast.deleteLater)
     
     def _show_preview_modal(self, total):
