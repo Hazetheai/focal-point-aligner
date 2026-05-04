@@ -176,9 +176,10 @@ class ArrangeGridWidget(QWidget):
     
     images_reordered = pyqtSignal(int, int)  # from_index, to_index
     
-    def __init__(self, aligner, min_size=100, gap=8, parent=None):
+    def __init__(self, aligner, orientation="landscape", min_size=100, gap=8, parent=None):
         super().__init__(parent)
         self.aligner = aligner
+        self._orientation = orientation
         self._min_size = min_size
         self._gap = gap
         
@@ -189,7 +190,8 @@ class ArrangeGridWidget(QWidget):
         
         self._drag_source_index = -1
         self._drop_target_index = -1
-        self._drop_target_position = None  # "before" or "after"
+        self._drop_target_position = None
+        self._drag_in_progress = False
         
         self.setAcceptDrops(True)
         
@@ -209,9 +211,15 @@ class ArrangeGridWidget(QWidget):
             return
         
         cols = self._calculate_columns()
+        preview_folder = self.aligner.get_preview_folder(self._orientation)
         
         for idx in range(total):
-            img = cv2.imread(str(self.aligner.image_files[idx]))
+            img = None
+            preview_path = preview_folder / f"{idx:04d}.jpg"
+            if preview_path.exists():
+                img = cv2.imread(str(preview_path))
+            if img is None:
+                img = cv2.imread(str(self.aligner.image_files[idx]))
             
             focal = self.aligner.focal_points.get(idx)
             focal_x = focal[0] if focal else None
@@ -253,6 +261,9 @@ class ArrangeGridWidget(QWidget):
     
     def _rebuild_on_resize(self):
         """Rebuild grid when columns change due to resize."""
+        if self._drag_in_progress:
+            return
+        
         old_cols = self._calculate_columns()
         self._layout.setSpacing(self._gap)
         
@@ -268,10 +279,14 @@ class ArrangeGridWidget(QWidget):
             return
         
         new_cols = self._calculate_columns()
+        preview_folder = self.aligner.get_preview_folder(self._orientation)
         
         for idx in range(total):
             img = None
-            if idx < len(self.aligner.image_files):
+            preview_path = preview_folder / f"{idx:04d}.jpg"
+            if preview_path.exists():
+                img = cv2.imread(str(preview_path))
+            if img is None and idx < len(self.aligner.image_files):
                 img = cv2.imread(str(self.aligner.image_files[idx]))
             
             focal = self.aligner.focal_points.get(idx)
@@ -291,11 +306,15 @@ class ArrangeGridWidget(QWidget):
         """Handle drag enter."""
         if event.mimeData().hasText():
             event.acceptProposedAction()
+            self._drag_in_progress = True
             self._drag_source_index = int(event.mimeData().text())
     
     def dragMoveEvent(self, event):
         """Handle drag move - update drop indicators."""
         if not event.mimeData().hasText():
+            return
+        
+        if not self._thumbnails:
             return
         
         pos = event.position().toPoint()
@@ -328,6 +347,7 @@ class ArrangeGridWidget(QWidget):
         self._clear_all_indicators()
         self._drop_target_index = -1
         self._drop_target_position = None
+        self._drag_in_progress = False
     
     def dropEvent(self, event):
         """Handle drop - reorder images."""
@@ -357,6 +377,7 @@ class ArrangeGridWidget(QWidget):
         self._drop_target_index = -1
         self._drop_target_position = None
         self._drag_source_index = -1
+        self._drag_in_progress = False
         
         event.acceptProposedAction()
     

@@ -151,7 +151,7 @@ class AlignerScreen(QWidget):
             }
         """)
         
-        self._arrange_grid = ArrangeGridWidget(self.aligner)
+        self._arrange_grid = ArrangeGridWidget(self.aligner, orientation=self._preview_orientation)
         self._arrange_grid.images_reordered.connect(self._on_arrange_reorder)
         
         scroll.setWidget(self._arrange_grid)
@@ -880,7 +880,9 @@ class AlignerScreen(QWidget):
                 self._load_preview_images()
         elif index == 2:
             logger.info(f"[TAB_CHANGE] Arrange tab selected, building grid...")
-            self._arrange_grid._build_grid()
+            if hasattr(self, '_arrange_grid'):
+                self._arrange_grid._orientation = self._preview_orientation
+                self._arrange_grid._build_grid()
     
     def _on_dot_clicked(self, idx):
         """Handle dot click navigation."""
@@ -958,6 +960,9 @@ class AlignerScreen(QWidget):
         self._preview_orientation = "portrait" if self._preview_orientation == "landscape" else "landscape"
         self.aligner.ensure_preview_for_current(self._preview_orientation)
         self._load_preview_images()
+        
+        if hasattr(self, '_arrange_grid'):
+            self._arrange_grid._orientation = self._preview_orientation
     
     def _on_clear_focal(self):
         """Clear focal point for current image."""
