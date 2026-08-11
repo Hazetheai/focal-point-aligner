@@ -9,11 +9,14 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
-    QFileDialog, QMessageBox, QGridLayout
+    QFileDialog, QMessageBox, QGridLayout, QStackedWidget,
+    QListWidget, QListWidgetItem, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
 import styles
+from batch import BatchManager
+from ui.merge_dialog import MergeDialog
 
 
 CONFIG_FILE = Path(__file__).parent.parent / "config.json"
@@ -22,12 +25,18 @@ CONFIG_FILE = Path(__file__).parent.parent / "config.json"
 class OpenerScreen(QWidget):
     """Opening screen for folder selection and configuration."""
     
-    # Signal emitted when user clicks Start, with config dict
+    # Signal emitted when user clicks Start in single-folder mode, with config dict
     start_clicked = pyqtSignal(dict)
+    # Signal emitted when user clicks Start in batch mode
+    batch_started = pyqtSignal(dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self._load_config()
+        self._mode = self._config.get('mode', 'single')
+        self._batch_root = Path(self._config.get('last_batch_root_dir', '')) if self._config.get('last_batch_root_dir') else None
+        self.batch_manager = None
+        self._merge_dialog = None
         self._build_ui()
         
         print("[DRAG] OpenerScreen init - enabling drag/drop on widget")
@@ -101,6 +110,8 @@ class OpenerScreen(QWidget):
         
         layout.addSpacing(styles.SPACING['lg'])
         
+        layout.addLayout(self._build_mode_row())
+        
         # Input folder section
         input_group = QGroupBox("Input Folder")
         input_group.setStyleSheet(styles.CARD_STYLE)
@@ -120,7 +131,12 @@ class OpenerScreen(QWidget):
         input_layout.addWidget(self.input_path, 1)
         input_layout.addWidget(self.input_btn)
         input_group.setLayout(input_layout)
-        layout.addWidget(input_group)
+        
+        self._config_stack = QStackedWidget()
+        self._single_page = QWidget()
+        single_lay = QVBoxLayout(self._single_page)
+        single_lay.setSpacing(styles.SPACING['md'])
+        single_lay.addWidget(input_group)
         
         # Target size section
         size_group = QGroupBox("Target Dimensions")
@@ -171,7 +187,7 @@ class OpenerScreen(QWidget):
         size_layout.addWidget(preset_btn_3, 1, 3)
         
         size_group.setLayout(size_layout)
-        layout.addWidget(size_group)
+        single_lay.addWidget(size_group)
         
         # Output folder section
         output_group = QGroupBox("Output Folder (defaults to input location)")
@@ -192,18 +208,34 @@ class OpenerScreen(QWidget):
         output_layout.addWidget(self.output_path, 1)
         output_layout.addWidget(self.output_btn)
         output_group.setLayout(output_layout)
-        layout.addWidget(output_group)
+        single_lay.addWidget(output_group)
+        single_lay.addStretch()
+        
+        self._config_stack.addWidget(self._single_page)
+        self._config_stack.addWidget(self._build_batch_page())
+        layout.addWidget(self._config_stack, 1)
         
         layout.addStretch()
+        
+        # Bottom buttons
+        btn_row = QHBoxLayout()
+        self.merge_btn = QPushButton("Merge…")
+        self.merge_btn.setStyleSheet(styles.BUTTON_OUTLINE)
+        self.merge_btn.setToolTip("Merge selected folders into one (work in any mode)")
+        self.merge_btn.clicked.connect(self._on_merge)
+        btn_row.addWidget(self.merge_btn)
+        btn_row.addStretch()
         
         # Start button
         self.start_btn = QPushButton("🚀  Start")
         self.start_btn.setStyleSheet(styles.BUTTON_PRIMARY)
         self.start_btn.setMinimumHeight(50)
         self.start_btn.clicked.connect(self.on_start_clicked)
-        layout.addWidget(self.start_btn)
+        btn_row.addWidget(self.start_btn)
+        layout.addLayout(btn_row)
         
         self.setLayout(layout)
+        self._update_mode_display()
     
     def browse_input_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -280,6 +312,14 @@ class OpenerScreen(QWidget):
         self._config['target_height'] = self.height_spin.value()
         self._save_config()
         
+        # Batch mode
+        if self._mode == 'batch':
+            self._save_batch_config()
+            config = self._apply_batch_config()
+            if config:
+                self.batch_started.emit(config)
+            return
+        
         # Validate inputs
         input_folder = self.input_path.text().strip()
         
@@ -328,3 +368,159 @@ class OpenerScreen(QWidget):
         
         # Emit signal with config
         self.start_clicked.emit(config)
+    
+    def _build_mode_row(self):
+        row = QHBoxLayout()
+        row.addStretch()
+        self._single_radio = QRadioButton("Single Folder")
+        self._batch_radio = QRadioButton("Batch (Root)")
+        for rb in (self._single_radio, self._batch_radio):
+            rb.setStyleSheet(styles.LABEL_STYLE)
+        group = QButtonGroup(self)
+        group.addButton(self._single_radio)
+        group.addButton(self._batch_radio)
+        row.addWidget(self._single_radio)
+        row.addWidget(self._batch_radio)
+        row.addStretch()
+        # Set initial state before connecting so toggling doesn't fire
+        # _on_radio_changed during construction (when _config_stack doesn't exist).
+        self._single_radio.setChecked(self._mode == 'single')
+        self._batch_radio.setChecked(self._mode == 'batch')
+        self._single_radio.toggled.connect(self._on_radio_changed)
+        return row
+
+    def _on_radio_changed(self):
+        self._mode = 'batch' if self._batch_radio.isChecked() else 'single'
+        self._config['mode'] = self._mode
+        self._save_config()
+        self._update_mode_display()
+
+    def _on_merge(self):
+        self._merge_dialog = MergeDialog(parent=self)
+        self._merge_dialog.show()
+
+    def _update_mode_display(self):
+        is_batch = self._mode == 'batch'
+        self._config_stack.setCurrentIndex(1 if is_batch else 0)
+        self.start_btn.setText("🚀  Start Batch" if is_batch else "🚀  Start")
+
+    def _build_batch_page(self):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setSpacing(styles.SPACING['md'])
+
+        root_group = QGroupBox("Root Folder (contains one sub-folder per batch)")
+        root_group.setStyleSheet(styles.CARD_STYLE)
+        root_row = QHBoxLayout()
+        self.batch_root_edit = QLineEdit()
+        self.batch_root_edit.setReadOnly(True)
+        self.batch_root_edit.setStyleSheet(styles.INPUT_FIELD)
+        browse_btn = QPushButton("Browse")
+        browse_btn.setStyleSheet(styles.BUTTON_OUTLINE)
+        browse_btn.clicked.connect(self.browse_batch_root)
+        root_row.addWidget(self.batch_root_edit, 1)
+        root_row.addWidget(browse_btn)
+        root_group.setLayout(root_row)
+        lay.addWidget(root_group)
+
+        list_group = QGroupBox("Batches")
+        list_group.setStyleSheet(styles.CARD_STYLE)
+        list_lay = QVBoxLayout()
+        self.batch_list = QListWidget()
+        list_lay.addWidget(self.batch_list, 1)
+        btn_row = QHBoxLayout()
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setStyleSheet(styles.BUTTON_OUTLINE)
+        refresh_btn.clicked.connect(self.refresh_batch_queue)
+        merge_btn = QPushButton("Merge selected…")
+        merge_btn.setStyleSheet(styles.BUTTON_OUTLINE)
+        merge_btn.clicked.connect(self._on_merge_selected)
+        move_btn = QPushButton("Move aligned → root_aligned")
+        move_btn.setStyleSheet(styles.BUTTON_OUTLINE)
+        move_btn.clicked.connect(self._on_move_aligned)
+        btn_row.addWidget(refresh_btn)
+        btn_row.addWidget(merge_btn)
+        btn_row.addWidget(move_btn)
+        btn_row.addStretch()
+        list_lay.addLayout(btn_row)
+        list_group.setLayout(list_lay)
+        lay.addWidget(list_group, 1)
+        return page
+
+    def browse_batch_root(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Root Folder", str(Path.home()))
+        if folder:
+            self.set_batch_root(Path(folder))
+
+    def set_batch_root(self, root):
+        self._batch_root = Path(root)
+        self.batch_root_edit.setText(str(self._batch_root))
+        self._config['last_batch_root_dir'] = str(self._batch_root)
+        self._save_config()
+        self.refresh_batch_queue()
+
+    def _save_batch_config(self):
+        self._config['mode'] = 'batch'
+        self._config['last_batch_root_dir'] = str(self._batch_root) if self._batch_root else ''
+        self._config['target_width'] = self.width_spin.value()
+        self._config['target_height'] = self.height_spin.value()
+        self._save_config()
+
+    def refresh_batch_queue(self):
+        if not self._batch_root or not Path(self._batch_root).is_dir():
+            if hasattr(self, 'batch_list'):
+                self.batch_list.clear()
+            return
+        self.batch_manager = BatchManager(self._batch_root)
+        self.set_batch_queue(self.batch_manager.build_queue())
+
+    def set_batch_queue(self, queue):
+        self.batch_list.clear()
+        for item in queue:
+            status = "✅ done" if item["done"] else "⏳ pending"
+            entry = QListWidgetItem(f"{status}   {item['name']}")
+            entry.setData(Qt.ItemDataRole.UserRole, item["path"])
+            self.batch_list.addItem(entry)
+
+    def get_selected_batch_paths(self):
+        return [item.data(Qt.ItemDataRole.UserRole)
+                for item in self.batch_list.selectedItems()]
+
+    def _on_merge_selected(self):
+        paths = self.get_selected_batch_paths()
+        if not paths:
+            QMessageBox.information(self, "No Selection", "Select at least one batch to merge.")
+            return
+        self._merge_dialog = MergeDialog(sources=paths, parent=self)
+        self._merge_dialog.show()
+
+    def _on_move_aligned(self):
+        if not self._batch_root or not Path(self._batch_root).is_dir():
+            QMessageBox.warning(self, "No Root", "Choose a root folder first.")
+            return
+        from batch import move_aligned_outputs
+        report = move_aligned_outputs(self._batch_root)
+        self.refresh_batch_queue()
+        QMessageBox.information(
+            self,
+            "Moved Aligned",
+            (f"Moved {len(report['moved'])} aligned folder(s) to:\n{report['dest']}"
+             if report["moved"] else "No aligned output folders found to move.")
+        )
+
+    def _apply_batch_config(self):
+        if not self._batch_root or not Path(self._batch_root).is_dir():
+            QMessageBox.warning(self, "No Root", "Choose a valid root folder.")
+            return None
+        if self.batch_manager is None:
+            self.refresh_batch_queue()
+        pending = self.batch_manager.next_pending() if self.batch_manager else None
+        if pending is None:
+            QMessageBox.information(self, "All Batches Complete",
+                                    "Every batch in this root is already aligned.")
+            return None
+        return {
+            'root': str(self._batch_root),
+            'target_width': self.width_spin.value(),
+            'target_height': self.height_spin.value(),
+        }
