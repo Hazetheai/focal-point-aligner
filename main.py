@@ -47,6 +47,7 @@ class FocalPointAlignerApp(QApplication):
         self.batch_manager = None
         self._batch_target_width = 2560
         self._batch_target_height = 1440
+        self._batch_seen = set()
     
     def start(self):
         """Start the application with the opener screen."""
@@ -86,19 +87,29 @@ class FocalPointAlignerApp(QApplication):
         self.batch_manager = BatchManager(self.batch_root)
         self._batch_target_width = config.get('target_width', 2560)
         self._batch_target_height = config.get('target_height', 1440)
+        self._batch_seen = set()
         self.opener.hide()
         self._open_next_batch_folder()
 
     def _open_next_batch_folder(self):
         """Load the next pending batch folder into the aligner, or show the
-        all-complete queue in the opener."""
-        nxt = self.batch_manager.next_pending() if self.batch_manager else None
+        all-complete queue in the opener. Folders already opened this session
+        (e.g. escaped without exporting) are skipped so auto-advance never
+        loops back onto the same batch."""
+        nxt = None
+        for folder in self.batch_manager.discover_subfolders():
+            if folder in self._batch_seen:
+                continue
+            if not self.batch_manager.is_done(folder):
+                nxt = folder
+                break
         if nxt is None:
             self.opener.refresh_batch_queue()
             self.opener.show()
             self.opener.raise_()
             self.opener.activateWindow()
             return
+        self._batch_seen.add(nxt)
         config = {
             'input_folder': str(nxt),
             'output_folder': str(self.batch_manager.aligned_output_for(nxt)),
