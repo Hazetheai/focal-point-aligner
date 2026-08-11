@@ -41,11 +41,18 @@ class FocalPointAlignerApp(QApplication):
         self.aligner_screen = None
         self.closer = None
         self.current_config = None
+        
+        self.batch_mode = False
+        self.batch_root = None
+        self.batch_manager = None
+        self._batch_target_width = 2560
+        self._batch_target_height = 1440
     
     def start(self):
         """Start the application with the opener screen."""
         self.opener = OpenerScreen()
         self.opener.start_clicked.connect(self.on_start_clicked)
+        self.opener.batch_started.connect(self.on_batch_started)
         self.opener.show()
     
     def start_with_config(self, config):
@@ -57,8 +64,11 @@ class FocalPointAlignerApp(QApplication):
         self.aligner_screen.show()
     
     def on_start_clicked(self, config: dict):
-        """Handle start button click from opener."""
+        """Handle start button click from opener (single-folder mode)."""
         self.current_config = config
+        self.batch_mode = False
+        self.batch_root = None
+        self.batch_manager = None
         
         self.opener.hide()
         
@@ -66,13 +76,61 @@ class FocalPointAlignerApp(QApplication):
         self.aligner_screen.aligner_finished.connect(self.on_aligner_finished)
         self.aligner_screen.quit_requested.connect(self.on_aligner_finished)
         self.aligner_screen.show()
-    
+
+    def on_batch_started(self, config: dict):
+        """Enter batch mode: hide opener and load the first pending sub-folder."""
+        from pathlib import Path
+        from batch import BatchManager
+        self.batch_mode = True
+        self.batch_root = Path(config['root'])
+        self.batch_manager = BatchManager(self.batch_root)
+        self._batch_target_width = config.get('target_width', 2560)
+        self._batch_target_height = config.get('target_height', 1440)
+        self.opener.hide()
+        self._open_next_batch_folder()
+
+    def _open_next_batch_folder(self):
+        """Load the next pending batch folder into the aligner, or show the
+        all-complete queue in the opener."""
+        nxt = self.batch_manager.next_pending() if self.batch_manager else None
+        if nxt is None:
+            self.opener.refresh_batch_queue()
+            self.opener.show()
+            self.opener.raise_()
+            self.opener.activateWindow()
+            return
+        config = {
+            'input_folder': str(nxt),
+            'output_folder': str(self.batch_manager.aligned_output_for(nxt)),
+            'target_width': self._batch_target_width,
+            'target_height': self._batch_target_height,
+        }
+        self.current_config = config
+        self.aligner_screen = AlignerScreen(config)
+        self.aligner_screen.aligner_finished.connect(self.on_aligner_finished)
+        self.aligner_screen.quit_requested.connect(self.on_aligner_finished)
+        self.aligner_screen.show()
+
     def on_aligner_finished(self, stats: dict):
-        """Handle aligner completion - just quit directly."""
+        """Handle aligner completion. Single mode: return to the opener screen.
+        Batch mode: tear down and auto-open the next pending sub-folder."""
         if self.aligner_screen:
-            self.aligner_screen.hide()
+            self.aligner_screen.close()
+            self.aligner_screen.deleteLater()
             self.aligner_screen = None
-        self.quit()
+        if self.batch_mode and self.batch_manager:
+            self._open_next_batch_folder()
+        else:
+            self._show_opener()
+    
+    def _show_opener(self):
+        """Show (or recreate) the opener screen."""
+        if self.opener:
+            self.opener.show()
+            self.opener.raise_()
+            self.opener.activateWindow()
+        else:
+            self.start()
     
     def on_new_batch(self):
         """Handle new batch button."""
