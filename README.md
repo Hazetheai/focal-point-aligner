@@ -9,6 +9,9 @@ A tool for aligning images by selecting focal points. Images are processed so th
 - Batch processing
 - Auto-save with crash recovery
 - Preview generation for both landscape and portrait orientations
+- **Batch (root-folder) mode** — process many sub-folders in sequence; the next pending folder loads automatically when one finishes
+- **Merge folders** — combine several folders (raw or aligned) into one, prefixing each file with its source folder name
+- **Move aligned** — gather all `<sub>_aligned` output folders into an adjacent `<root>_aligned` folder
 
 ## Installation
 
@@ -206,7 +209,7 @@ python scripts/align_and_scale_images.py /path/to/images --orientation landscape
 | X | Remove current image from the set |
 | R | Reset all focal points |
 | F | Open export menu |
-| Escape | Quit application |
+| Escape | Finish batch and return to the opening screen |
 
 ## Project Structure
 
@@ -214,6 +217,7 @@ python scripts/align_and_scale_images.py /path/to/images --orientation landscape
 FocalPointAligner/
 ├── cli.py                  # CLI interface
 ├── main.py                 # PyQt6 GUI entry point
+├── batch.py                # Batch/merge/move logic (UI-independent)
 ├── aligner_core.py         # Core logic (UI-independent)
 ├── styles.py               # UI styling constants
 ├── scripts/
@@ -221,13 +225,16 @@ FocalPointAligner/
 ├── ui/                     # PyQt6 UI components
 │   ├── aligner_screen.py   # Main aligner UI
 │   ├── end_menu.py         # Export dialog
+│   ├── merge_dialog.py     # Folder merge dialog
 │   ├── navigation_dots.py  # Navigation dots widget
 │   ├── image_display.py    # Image display widget
 │   ├── opener_screen.py    # Folder selection screen
 │   ├── thumbnail_widget.py # Thumbnail display
 │   └── logger.py           # Logging utilities
 ├── tests/
-│   └── test_cli.py         # CLI tests
+│   ├── test_cli.py         # CLI tests
+│   ├── test_batch.py       # Batch/merge/move logic tests
+│   └── test_return_to_opener.py  # Return-to-opener + batch flow tests
 ├── requirements.txt        # Python dependencies
 ├── FocalPointAligner.spec  # PyInstaller build config (macOS)
 └── build_macos.sh          # Build script for macOS .app
@@ -238,8 +245,29 @@ FocalPointAligner/
 1. **Start**: Select input and output folders
 2. **Align**: Click on each image to set focal point, then press Enter to save
 3. **Preview**: Switch to Preview tab to see aligned images
-4. **Reorder**: Drag navigation dots to reorder images
+4. **Reorder**: Drag navigation dots (or use the Arrange tab grid) to reorder images
 5. **Export**: Press F to open export menu, select orientation, and export
+6. **Next batch**: After export (or after pressing Escape to finish a batch), the opening screen returns automatically — pick the next folder and start again
+
+## Batch Mode (Root Folder)
+
+Align a large number of images by putting each group in its own sub-folder under one root folder.
+
+1. On the opening screen, switch the toggle to **Batch (Root)**.
+2. **Browse** to select the root folder. The list shows every sub-folder with a status (`✅ done` / `⏳ pending`).
+3. Press **Start Batch**. The first pending folder opens in the aligner.
+4. When a folder is finished — via **Export** (`F`) or **Escape** — the next pending folder opens automatically, skipping folders that are already aligned (i.e. whose `<sub>_aligned` output folder already contains images).
+5. When every folder is done, the list returns with all items marked `✅ done`.
+
+Escaping a folder without exporting keeps it marked pending, so a later **Start Batch** will resume it (focal points are preserved in that folder's `focal_points.json`).
+
+## Merge Folders
+
+The **Merge…** button (available in any mode) combines images from several folders into one output folder. Each image is copied with its source folder name prefixed to the filename, e.g. `img_0042.jpg` from folder `fuji` becomes `fuji_img_0042.jpg`. If a folder has an aligned output, its aligned images are used instead (disable via the "Use aligned outputs when present" checkbox). In batch mode, select batches in the list and use **Merge selected…**. Merge never modifies the source folders.
+
+## Move Aligned
+
+In batch mode, **Move aligned → root_aligned** moves every `<sub>_aligned` output folder under the root into a folder named `<root>_aligned` next to the root (e.g. `photos/` → `photos_aligned/` containing `photos_aligned/<sub>_aligned/`), keeping each folder's name.
 
 ## Configuration
 
