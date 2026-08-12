@@ -29,6 +29,11 @@ import numpy as np
 
 JSON_VERSION = "2.0"
 
+# Sensible framing for any image size. Tweak these if output framing feels wrong;
+# they are documented in README.md and AGENTS.md.
+DEFAULT_MAX_ZOOM = 3.0  # slider default (range 1.0-6.0); cap = cover * this
+UPSCALE_CAP = 2.0       # max real upscale of the sharp subject before blur-fill
+
 
 def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_h):
     """
@@ -76,6 +81,45 @@ def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_
     crop_y = -ty
     
     return crop_x, crop_y, scale, target_w, target_h
+
+
+def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
+    """Return (x, y, w, h) - the crop rectangle in ORIGINAL pixels.
+
+    Bounded-zoom framing: fit the whole image to the frame (cover) as the
+    baseline, then allow zooming toward the focal point up to cover*max_zoom.
+    """
+    focal_x = max(1, min(focal_x, orig_w - 1))
+    focal_y = max(1, min(focal_y, orig_h - 1))
+
+    half_tw = target_w / 2
+    half_th = target_h / 2
+
+    cover = max(target_w / orig_w, target_h / orig_h)
+
+    candidates = []
+    for d in (focal_x, orig_w - focal_x):
+        if d > 0:
+            candidates.append(half_tw / d)
+    for d in (focal_y, orig_h - focal_y):
+        if d > 0:
+            candidates.append(half_th / d)
+    focal_scale = max(candidates) if candidates else cover
+
+    scale = max(cover, focal_scale)
+    max_scale = max(cover, 1e-9) * max_zoom
+    scale = max(0, min(scale, max_scale))
+
+    w = max(1.0, target_w / scale)
+    h = max(1.0, target_h / scale)
+
+    x = focal_x - w / 2
+    y = focal_y - h / 2
+
+    x = min(max(x, 0.0), orig_w - w)
+    y = min(max(y, 0.0), orig_h - h)
+
+    return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
 
 
 def load_image_safely(img_path):
@@ -231,7 +275,7 @@ class FocalPointAlignerCore:
                     self._current_idx_loaded = True
                 
                 focal_data = {k: v for k, v in data.items() 
-                              if k not in ["alignment_mode", "preview_state", "discarded", "current_idx", "_meta"]}
+                              if k not in ["alignment_mode", "preview_state", "discarded", "current_idx", "order", "_meta"]}
                 
                 existing_files = {f.name for f in self.image_files}
                 
@@ -254,6 +298,9 @@ class FocalPointAlignerCore:
                             self.completed.add(idx)
                             break
                 
+                if "order" in data and isinstance(data["order"], list):
+                    self._reorder_files_by_names(data["order"])
+                
                 if self.focal_points:
                     # Only set first_pending if current_idx was NOT loaded from JSON
                     if not hasattr(self, '_current_idx_loaded'):
@@ -270,6 +317,51 @@ class FocalPointAlignerCore:
                     self.current_idx = 0
             except Exception as e:
                 logger.warning(f"Warning: Could not load focal points: {e}")
+    
+    def _reorder_files_by_names(self, ordered_names):
+        """Reorder self.image_files to match a persisted order list (by filename).
+
+        Filenames no longer present are skipped; files not listed (e.g. newly added)
+        are appended in sorted order. All per-index dicts are remapped by filename.
+        """
+        if not ordered_names:
+            return
+        by_name = {f.name: f for f in self.image_files}
+        
+        ordered = []
+        for name in ordered_names:
+            if name in by_name:
+                ordered.append(by_name.pop(name))
+        ordered.extend(sorted(by_name.values()))
+        
+        if len(ordered) != len(self.image_files):
+            logger.warning(f"[ALIGNER _reorder_files_by_names] Length mismatch: order={len(ordered)} vs files={len(self.image_files)}")
+            return
+        
+        old_name_to_idx = {f.name: i for i, f in enumerate(self.image_files)}
+        name_to_new_idx = {f.name: i for i, f in enumerate(ordered)}
+        
+        new_focal = {}
+        new_completed = set()
+        new_auto_center = {}
+        new_dimensions = {}
+        for new_idx, img_file in enumerate(ordered):
+            old_idx = old_name_to_idx[img_file.name]
+            if old_idx in self.focal_points:
+                new_focal[new_idx] = self.focal_points[old_idx]
+            if old_idx in self.completed:
+                new_completed.add(new_idx)
+            if old_idx in self.auto_center_flags:
+                new_auto_center[new_idx] = self.auto_center_flags[old_idx]
+            if old_idx in self.image_dimensions:
+                new_dimensions[new_idx] = self.image_dimensions[old_idx]
+        
+        self.image_files = ordered
+        self.focal_points = new_focal
+        self.completed = new_completed
+        self.auto_center_flags = new_auto_center
+        self.image_dimensions = new_dimensions
+        logger.info(f"[ALIGNER _reorder_files_by_names] Reordered to {[f.name[:20] for f in ordered[:5]]}...")
     
     def _validate_and_discard_images(self):
         """Validate all images and discard invalid ones.
@@ -340,6 +432,8 @@ class FocalPointAlignerCore:
         },
             "current_idx": self.current_idx,
         }
+        
+        data["order"] = [self.image_files[i].name for i in range(len(self.image_files))]
         
         for idx, focal in self.focal_points.items():
             if idx < len(self.image_files):
@@ -903,20 +997,21 @@ class FocalPointAlignerCore:
         if from_index == to_index or not (0 <= from_index < len(self.image_files)) or not (0 <= to_index < len(self.image_files)):
             return False
         
-        # Move the image file in list
-        self.image_files.insert(to_index, self.image_files.pop(from_index))
-        
-        # Rebuild all dictionaries by mapping old indices to new positions
-        # This is simpler: find where each old index ended up in the new list
+        old_files = list(self.image_files)
         old_to_new = {}
-        for new_idx, path in enumerate(self.image_files):
-            # Find which old index this file came from
-            for old_idx, old_path in enumerate(self.image_files):
+        
+        new_files = list(old_files)
+        file_moved = new_files.pop(from_index)
+        new_files.insert(to_index, file_moved)
+        
+        for new_idx, path in enumerate(new_files):
+            for old_idx, old_path in enumerate(old_files):
                 if old_path == path:
                     old_to_new[old_idx] = new_idx
                     break
         
-        # Rebuild focal_points with new indices
+        self.image_files = new_files
+        
         new_focal = {}
         new_completed = set()
         new_auto_center = {}
@@ -943,11 +1038,15 @@ class FocalPointAlignerCore:
         self.auto_center_flags = new_auto_center
         self.image_dimensions = new_dimensions
         
-        # Update current index to follow the image
         old_current = self.current_idx
         self.current_idx = old_to_new.get(old_current, old_current)
         
-        # Save changes
+        self.preview_dirty = set(range(len(self.image_files)))
+        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
+            if folder and folder.exists():
+                for f in folder.glob("*.jpg"):
+                    f.unlink()
+        
         self.save_focal_points()
         return True
 
@@ -1095,6 +1194,59 @@ class FocalPointAlignerCore:
         self.save_focal_points()
         
         logger.info(f"[ALIGNER discard_current] DONE: current_idx={self.current_idx}, total_images={len(self.image_files)}")
+    
+    def apply_arrange_order(self, display_order):
+        """Apply display order (list mapping new position -> original index) to image_files and all dictionaries."""
+        if len(display_order) != len(self.image_files):
+            logger.warning(f"[ALIGNER apply_arrange_order] Length mismatch: {len(display_order)} vs {len(self.image_files)}")
+            return False
+        
+        logger.info(f"[ALIGNER apply_arrange_order] Applying order: first 5={display_order[:5]}")
+        
+        new_files = [self.image_files[i] for i in display_order]
+        new_focal = {}
+        new_completed = set()
+        new_auto_center = {}
+        new_dimensions = {}
+        
+        for new_pos, orig_idx in enumerate(display_order):
+            if orig_idx in self.focal_points:
+                new_focal[new_pos] = self.focal_points[orig_idx]
+            if orig_idx in self.completed:
+                new_completed.add(new_pos)
+            if orig_idx in self.auto_center_flags:
+                new_auto_center[new_pos] = self.auto_center_flags[orig_idx]
+            if orig_idx in self.image_dimensions:
+                new_dimensions[new_pos] = self.image_dimensions[orig_idx]
+        
+        old_order = [i for i in range(len(self.image_files))]
+        if display_order != old_order:
+            self.image_files = new_files
+            self.focal_points = new_focal
+            self.completed = new_completed
+            self.auto_center_flags = new_auto_center
+            self.image_dimensions = new_dimensions
+            
+            self.preview_dirty = set(range(len(self.image_files)))
+            for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
+                if folder and folder.exists():
+                    for f in folder.glob("*.jpg"):
+                        f.unlink()
+                    logger.info(f"[ALIGNER apply_arrange_order] Cleared previews in {folder}")
+            
+            if self.current_idx in self.focal_points:
+                pass
+            elif self.current_idx < len(self.image_files):
+                img = self.get_current_image()
+                if img is not None:
+                    h, w = img.shape[:2]
+                    self.focal_points[self.current_idx] = (w/2, h/2)
+            
+            logger.info(f"[ALIGNER apply_arrange_order] DONE, new order: {[f.name[:20] for f in self.image_files[:5]]}")
+            return True
+        else:
+            logger.info("[ALIGNER apply_arrange_order] No change needed")
+            return True
     
     def verify_and_fix_preview_integrity(self):
         """Ensure preview files are incrementally named 0, 1, 2, ... without gaps."""
