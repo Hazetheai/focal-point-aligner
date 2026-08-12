@@ -16,6 +16,7 @@ import numpy as np
 
 import styles
 from ui.logger import logger
+from aligner_core import compute_crop, crop_to_widget
 
 
 class ImageDisplayWidget(QLabel):
@@ -42,6 +43,8 @@ class ImageDisplayWidget(QLabel):
         self._original_pixmap = None
         self._focal_point = None
         self._pending_focal = None
+        
+        self._crop_policy = None  # (target_w, target_h, max_zoom) or None = no overlay
         
         self._original_width = 0
         self._original_height = 0
@@ -165,6 +168,15 @@ class ImageDisplayWidget(QLabel):
         """Clear the focal point."""
         self._focal_point = None
         self._pending_focal = None
+    
+    def set_crop_policy(self, target_w, target_h, max_zoom):
+        """Enable the crop-region overlay for the given target dims."""
+        self._crop_policy = (int(target_w), int(target_h), float(max_zoom))
+        self.update()
+
+    def clear_crop_policy(self):
+        self._crop_policy = None
+        self.update()
     
     def get_click_position(self, event):
         """Convert widget click position to original image coordinates."""
@@ -315,3 +327,27 @@ class ImageDisplayWidget(QLabel):
             line_len = 20
             painter.drawLine(int(disp_x - line_len), int(disp_y), int(disp_x + line_len), int(disp_y))
             painter.drawLine(int(disp_x), int(disp_y - line_len), int(disp_x), int(disp_y + line_len))
+
+        if self._crop_policy is not None and focal_to_draw is not None:
+            tw, th, mz = self._crop_policy
+            orig_w = self._original_width
+            orig_h = self._original_height
+            if orig_w > 0 and orig_h > 0 and self._displayed_pixmap_rect is not None:
+                img_x, img_y, disp_w, disp_h = self._displayed_pixmap_rect
+                cx, cy, cw, ch = compute_crop(
+                    focal_to_draw[0], focal_to_draw[1], orig_w, orig_h, tw, th, mz
+                )
+                wx, wy, ww, wh = crop_to_widget(
+                    cx, cy, cw, ch, img_x, img_y, disp_w, disp_h, orig_w, orig_h
+                )
+
+                dim = QColor(0, 0, 0, 140)  # ~55% black
+                # top / bottom / left / right bands around the keep-region
+                painter.fillRect(img_x, img_y, disp_w, max(0, wy - img_y), dim)  # above
+                painter.fillRect(img_x, wy + wh, disp_w, max(0, (img_y + disp_h) - (wy + wh)), dim)  # below
+                painter.fillRect(img_x, max(0, wy), max(0, wx - img_x), min(wh, disp_h), dim)  # left
+                painter.fillRect(wx + ww, max(0, wy), max(0, (img_x + disp_w) - (wx + ww)), min(wh, disp_h), dim)  # right
+
+                painter.setPen(QPen(QColor(255, 255, 255), 3))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawRect(int(wx), int(wy), int(ww), int(wh))
