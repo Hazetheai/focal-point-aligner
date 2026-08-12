@@ -122,6 +122,58 @@ def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h, max_zoom=
     return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
 
 
+def render_aligned(img, focal, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
+    """Render one image to exactly (target_h, target_w), handling any source size.
+
+    Returns (aligned, used_blur_fill). For sources so small they would need more
+    than UPSCALE_CAP real upscaling, the sharp image is capped and composited over
+    a blurred, darkened stretched copy of itself (no mushy upscale of the subject).
+    """
+    h, w = img.shape[:2]
+    if focal is None:
+        focal = (w / 2, h / 2)
+
+    cover = max(target_w / w, target_h / h)
+
+    if cover > UPSCALE_CAP:
+        # Blur-fill path: keep the subject sharp, fill the frame with its blur.
+        sharp_scale = UPSCALE_CAP
+        sub_w = max(1, int(round(w * sharp_scale)))
+        sub_h = max(1, int(round(h * sharp_scale)))
+        sharp = cv2.resize(img, (sub_w, sub_h), interpolation=cv2.INTER_LANCZOS4)
+
+        backdrop = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+        backdrop = cv2.GaussianBlur(backdrop, (0, 0), 40)
+        backdrop = cv2.addWeighted(backdrop, 0.6, np.zeros_like(backdrop), 0.0, 0)
+        canvas = backdrop.copy()
+
+        off_x = int(round(target_w / 2 - focal[0] * sharp_scale))
+        off_y = int(round(target_h / 2 - focal[1] * sharp_scale))
+        # keep the subject fully inside the frame
+        off_x = min(max(off_x, 0), target_w - sub_w)
+        off_y = min(max(off_y, 0), target_h - sub_h)
+
+        canvas[off_y:off_y + sub_h, off_x:off_x + sub_w] = sharp
+        return canvas, True
+
+    fx, fy = focal
+    x, y, cw, ch = compute_crop(fx, fy, w, h, target_w, target_h, max_zoom)
+    region = img[y:y + ch, x:x + cw]
+    aligned = cv2.resize(region, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+    return aligned, False
+
+
+def crop_to_widget(crop_x, crop_y, crop_w, crop_h, img_x, img_y, disp_w, disp_h, orig_w, orig_h):
+    """Map an original-pixel crop rect to widget display coordinates (pure helper)."""
+    sx = disp_w / orig_w if orig_w else 1.0
+    sy = disp_h / orig_h if orig_h else 1.0
+    wx = img_x + crop_x * sx
+    wy = img_y + crop_y * sy
+    ww = crop_w * sx
+    wh = crop_h * sy
+    return (int(round(wx)), int(round(wy)), int(round(ww)), int(round(wh)))
+
+
 def load_image_safely(img_path):
     """Load an image using OpenCV, with PIL fallback for problematic formats."""
     # Try OpenCV first
@@ -170,6 +222,7 @@ class FocalPointAlignerCore:
         
         self.target_width = config.get('target_width', 2560)
         self.target_height = config.get('target_height', 1440)
+        self.max_zoom = config.get('max_zoom', DEFAULT_MAX_ZOOM)
         
         self.preview_landscape_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_landscape"
         self.preview_portrait_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_portrait"
@@ -814,27 +867,9 @@ class FocalPointAlignerCore:
             if focal is None:
                 focal = (w / 2, h / 2)
             
-            crop_x, crop_y, scale, crop_w, crop_h = calculate_transformation(
-                focal[0], focal[1], w, h, target_w, target_h
+            aligned, _ = render_aligned(
+                img, focal, target_w, target_h, max_zoom=self.max_zoom
             )
-            
-            scaled_w = int(w * scale)
-            scaled_h = int(h * scale)
-            scaled = cv2.resize(img, (scaled_w, scaled_h), interpolation=cv2.INTER_LANCZOS4)
-            
-            src_x = max(0, int(round(crop_x)))
-            src_y = max(0, int(round(crop_y)))
-            
-            actual_crop_h = min(src_y + int(round(crop_h)), scaled_h)
-            actual_crop_w = min(src_x + int(round(crop_w)), scaled_w)
-            
-            src_h = actual_crop_h - src_y
-            src_w = actual_crop_w - src_x
-            
-            aligned = scaled[src_y:src_y + src_h, src_x:src_x + src_w]
-            
-            if aligned.shape[0] != target_h or aligned.shape[1] != target_w:
-                aligned = cv2.resize(aligned, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
             
             output_folder.mkdir(parents=True, exist_ok=True)
             output_name = f"{idx:04d}.jpg"

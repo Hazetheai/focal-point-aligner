@@ -1,10 +1,55 @@
 import math
 
+import numpy as np
+
 from aligner_core import (
     compute_crop,
+    render_aligned,
     DEFAULT_MAX_ZOOM,
     UPSCALE_CAP,
 )
+
+
+def _make_img(w, h):
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, :, 2] = 255  # red, easy to assert on
+    return img
+
+
+def test_render_aligned_tiny_uses_blur_fill():
+    img = _make_img(500, 300)
+    aligned, used_blur = render_aligned(img, (250, 150), 2560, 1440)
+    assert aligned.shape[:2] == (1440, 2560)
+    assert used_blur is True
+
+
+def test_render_aligned_tiny_sharp_subject_not_overscaled():
+    img = _make_img(320, 240)
+    aligned, used_blur = render_aligned(img, (160, 120), 2560, 1440)
+    assert used_blur is True
+    # subject region must not be upscaled beyond UPSCALE_CAP
+    sub_w = int(320 * UPSCALE_CAP)
+    assert sub_w <= 1440  # must not fill a 2560-wide frame at <=2x
+
+
+def test_render_aligned_large_uses_normal_path():
+    img = _make_img(12000, 8000)
+    aligned, used_blur = render_aligned(img, (6000, 4000), 2560, 1440)
+    assert aligned.shape[:2] == (1440, 2560)
+    assert used_blur is False
+
+
+def test_render_aligned_medium_output_dims():
+    img = _make_img(4000, 3000)
+    aligned, used_blur = render_aligned(img, (1000, 1500), 2560, 1440)
+    assert aligned.shape[:2] == (1440, 2560)
+    assert used_blur is False
+
+
+def test_render_aligned_none_focal_defaults_to_center():
+    img = _make_img(4000, 3000)
+    aligned, _ = render_aligned(img, None, 2560, 1440)
+    assert aligned.shape[:2] == (1440, 2560)
 
 
 def _run(fx, fy, ow, oh, tw, th, max_zoom=DEFAULT_MAX_ZOOM):
