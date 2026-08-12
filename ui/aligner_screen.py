@@ -7,7 +7,8 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QLabel,
-    QProgressBar, QDialog, QPushButton, QSizePolicy, QFrame, QScrollArea
+    QProgressBar, QDialog, QPushButton, QSizePolicy, QFrame, QScrollArea,
+    QSlider, QMessageBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QMetaObject, Q_ARG, QTimer
 from PyQt6.QtGui import QKeyEvent, QPixmap, QImage, QPainter, QColor, QPen, QKeySequence
@@ -87,6 +88,7 @@ class AlignerScreen(QWidget):
         self._create_preview_content()
         self._create_arrange_content()
         self._create_navigation_dots(layout)
+        self._create_progress_bar(layout)
         self._create_footer(layout)
         
         self.setLayout(layout)
@@ -95,6 +97,7 @@ class AlignerScreen(QWidget):
         self._show_original_mode()
         
         self.setFocus()
+        self._apply_crop_policy()
     
     def _create_original_content(self):
         """Create the 3-column layout for Original mode."""
@@ -152,26 +155,123 @@ class AlignerScreen(QWidget):
         """)
         
         self._arrange_grid = ArrangeGridWidget(self.aligner, orientation=self._preview_orientation)
-        self._arrange_grid.images_reordered.connect(self._on_arrange_reorder)
+        self._arrange_grid.open_image_requested.connect(self._on_arrange_open_image)
+        self._arrange_grid.preview_image_requested.connect(self._on_arrange_open_preview)
+        self._arrange_grid.image_selected.connect(self._on_arrange_image_selected)
         
         scroll.setWidget(self._arrange_grid)
         
+        # Toolbar
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(5, 5, 5, 5)
+        
+        self._btn_arrange_original = QPushButton("Original")
+        self._btn_arrange_original.setCheckable(True)
+        self._btn_arrange_original.setChecked(self._arrange_grid.get_show_original())
+        self._btn_arrange_original.setStyleSheet(self._style_arrange_toolbar_btn(True))
+        self._btn_arrange_original.clicked.connect(lambda: self._toggle_arrange_view(show_original=True))
+        
+        self._btn_arrange_preview = QPushButton("Preview")
+        self._btn_arrange_preview.setCheckable(True)
+        self._btn_arrange_preview.setChecked(not self._arrange_grid.get_show_original())
+        self._btn_arrange_preview.setStyleSheet(self._style_arrange_toolbar_btn(not self._arrange_grid.get_show_original()))
+        self._btn_arrange_preview.clicked.connect(lambda: self._toggle_arrange_view(show_original=False))
+        
+        self._arrange_scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self._arrange_scale_slider.setRange(60, 300)
+        self._arrange_scale_slider.setValue(self._arrange_grid._min_size)
+        self._arrange_scale_slider.setFixedWidth(140)
+        self._arrange_scale_slider.valueChanged.connect(self._on_arrange_scale_changed)
+        
+        self._arrange_scale_label = QLabel(f"{self._arrange_grid._min_size}px")
+        self._arrange_scale_label.setStyleSheet("color: #CDD6F4; font-size: 12px;")
+        
+        toolbar.addWidget(self._btn_arrange_original)
+        toolbar.addWidget(self._btn_arrange_preview)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(QLabel("Size:"))
+        toolbar.addWidget(self._arrange_scale_slider)
+        toolbar.addWidget(self._arrange_scale_label)
+        toolbar.addStretch()
+        
+        self._btn_arrange_save_order = QPushButton("Save Order")
+        self._btn_arrange_save_order.setStyleSheet(styles.BUTTON_TOOLBAR)
+        self._btn_arrange_save_order.clicked.connect(self._on_save_arrange_order)
+        toolbar.addWidget(self._btn_arrange_save_order)
+        
         arrange_layout = QVBoxLayout()
         arrange_layout.setContentsMargins(5, 5, 5, 5)
+        arrange_layout.addLayout(toolbar)
         arrange_layout.addWidget(scroll)
         self._arrange_tab.setLayout(arrange_layout)
     
-    def _on_arrange_reorder(self, from_index, to_index):
-        """Handle image reordering from Arrange tab."""
-        logger.info(f"[ARRANGE] Reorder from {from_index} to {to_index}")
+    def _on_save_arrange_order(self):
+        """Save the current display order to actual files."""
+        logger.info("[ARRANGE] Saving order...")
         
-        if self.aligner.move_image(from_index, to_index):
+        display_order = self._arrange_grid.get_display_order()
+        default_order = list(range(len(self.aligner.image_files)))
+        
+        if display_order == default_order:
+            logger.info("[ARRANGE] Order unchanged, nothing to save")
+            return
+        
+        if self.aligner.apply_arrange_order(display_order):
             self.aligner.save_focal_points()
-            self._update_nav_dots()
-            logger.info(f"[ARRANGE] move_image succeeded - rebuilding grid")
+            self.aligner.current_idx = 0
+            logger.info("[ARRANGE] Order saved successfully, current_idx reset to 0")
+            self._arrange_grid._display_order = list(range(len(self.aligner.image_files)))
+            self._arrange_grid.clear_cache()
             self._arrange_grid._build_grid()
         else:
-            logger.warning(f"[ARRANGE] move_image returned False")
+            logger.warning("[ARRANGE] Failed to save order")
+            QMessageBox.warning(
+                self,
+                "Could Not Save Order",
+                "The image set changed since this arrangement was made "
+                "(e.g. images were discarded), so the order could not be applied.\n\n"
+                "The grid has been refreshed to the current images — "
+                "please re-arrange and save again."
+            )
+            self._arrange_grid.sync_from_core()
+    
+    def _on_arrange_open_image(self, orig_idx):
+        """Open an image from Arrange tab in Original tab."""
+        logger.info(f"[ARRANGE] Opening image index {orig_idx} in Original tab")
+        self.aligner.navigate_to(orig_idx)
+        self._tabs.setCurrentIndex(0)
+    
+    def _on_arrange_open_preview(self, orig_idx):
+        """Open an image from Arrange tab in Preview tab."""
+        logger.info(f"[ARRANGE] Opening image index {orig_idx} in Preview tab")
+        self.aligner.navigate_to(orig_idx)
+        self._tabs.setCurrentIndex(1)
+    
+    def _on_arrange_image_selected(self, orig_idx):
+        """Handle image selection in Arrange tab."""
+        logger.debug(f"[ARRANGE] Image selected: {orig_idx}")
+    
+    def _toggle_arrange_view(self, show_original):
+        """Toggle original/preview view in Arrange tab."""
+        self._btn_arrange_original.setChecked(show_original)
+        self._btn_arrange_preview.setChecked(not show_original)
+        self._btn_arrange_original.setStyleSheet(self._style_arrange_toolbar_btn(show_original))
+        self._btn_arrange_preview.setStyleSheet(self._style_arrange_toolbar_btn(not show_original))
+        self._arrange_grid.set_show_original(show_original)
+    
+    def _on_arrange_scale_changed(self, value):
+        """Handle thumbnail scale slider change."""
+        step = 10
+        rounded = round(value / step) * step
+        self._arrange_scale_slider.setValue(rounded)
+        self._arrange_scale_label.setText(f"{rounded}px")
+        self._arrange_grid.set_thumbnail_size(rounded)
+    
+    def _style_arrange_toolbar_btn(self, active):
+        """Style for arrange toolbar toggle buttons."""
+        if active:
+            return "QPushButton { background-color: #45475A; color: #CDD6F4; border: 1px solid #89B4FA; border-radius: 4px; padding: 4px 10px; font-size: 12px; }"
+        return "QPushButton { background-color: #313244; color: #6C7086; border: 1px solid #45475A; border-radius: 4px; padding: 4px 10px; font-size: 12px; }"
     
     def _show_original_mode(self):
         """Show original mode UI elements."""
@@ -266,6 +366,27 @@ class AlignerScreen(QWidget):
         self._btn_orientation.setToolTip("Toggle preview orientation (O)")
         self._btn_orientation.clicked.connect(self._on_toggle_orientation)
         
+        header_layout.addSpacing(10)
+        zoom_label = QLabel("Zoom")
+        zoom_label.setStyleSheet(styles.LABEL_STYLE)
+        header_layout.addWidget(zoom_label)
+
+        self._zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self._zoom_slider.setRange(2, 12)      # 1.0x .. 6.0x in 0.5 steps
+        self._zoom_slider.setSingleStep(1)
+        self._zoom_slider.setFixedWidth(140)
+        # set initial value with signals blocked: _create_header runs before
+        # _main_image exists, so _on_max_zoom_changed must not fire yet
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(int(round(self.aligner.max_zoom * 2)))
+        self._zoom_slider.blockSignals(False)
+        self._zoom_slider.valueChanged.connect(self._on_max_zoom_changed)
+        header_layout.addWidget(self._zoom_slider)
+
+        self._zoom_value_label = QLabel(f"{self.aligner.max_zoom:.1f}x")
+        self._zoom_value_label.setStyleSheet(styles.LABEL_STYLE)
+        header_layout.addWidget(self._zoom_value_label)
+        
         header_layout.addWidget(self._btn_save)
         header_layout.addWidget(self._btn_skip)
         header_layout.addSpacing(10)
@@ -344,7 +465,7 @@ class AlignerScreen(QWidget):
         parent_layout.addWidget(self._nav_dots, 0)
     
     def _create_footer(self, parent_layout):
-        """Create the footer with shortcuts and progress bar."""
+        """Create the footer with shortcut keys."""
         footer_layout = QHBoxLayout()
         footer_layout.setSpacing(15)
         
@@ -356,6 +477,7 @@ class AlignerScreen(QWidget):
             "<span style='color:#60E080;font-weight:bold;'>←→</span> Navigate &nbsp;|&nbsp; "
             "<span style='color:#60E080;font-weight:bold;'>P</span> Preview &nbsp;|&nbsp; "
             "<span style='color:#60E080;font-weight:bold;'>O</span> Orientation &nbsp;|&nbsp; "
+            "<span style='color:#60E080;font-weight:bold;'>A</span> Arrange &nbsp;|&nbsp; "
             "<span style='color:#FF7070;font-weight:bold;'>Del</span> Clear &nbsp;|&nbsp; "
             "<span style='color:#FF7070;font-weight:bold;'>X</span> Discard &nbsp;|&nbsp; "
             "<span style='color:#7070FF;font-weight:bold;'>R</span> Reset &nbsp;|&nbsp; "
@@ -366,6 +488,15 @@ class AlignerScreen(QWidget):
         self._shortcuts_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._shortcuts_label.setFixedHeight(30)
         
+        footer_layout.addWidget(self._shortcuts_label)
+        
+        footer_container = QWidget()
+        footer_container.setFixedHeight(40)
+        footer_container.setLayout(footer_layout)
+        parent_layout.addWidget(footer_container)
+    
+    def _create_progress_bar(self, parent_layout):
+        """Create the progress bar row."""
         self._progress_bar = QProgressBar()
         self._progress_bar.setStyleSheet("""
             QProgressBar {
@@ -380,14 +511,7 @@ class AlignerScreen(QWidget):
             }
         """)
         self._progress_bar.setFixedHeight(20)
-        
-        footer_layout.addWidget(self._shortcuts_label)
-        footer_layout.addWidget(self._progress_bar)
-        
-        footer_container = QWidget()
-        footer_container.setFixedHeight(60)
-        footer_container.setLayout(footer_layout)
-        parent_layout.addWidget(footer_container)
+        parent_layout.addWidget(self._progress_bar)
     
     def _setup_shortcuts(self):
         """Setup keyboard shortcuts."""
@@ -408,6 +532,7 @@ class AlignerScreen(QWidget):
         self._shortcuts['shift_left'] = QKeySequence("[")
         self._shortcuts['shift_right'] = QKeySequence("]")
         self._shortcuts['position'] = QKeySequence("G")
+        self._shortcuts['arrange'] = QKeySequence("A")
         self._shortcuts['finish'] = QKeySequence("F")
     
     def keyPressEvent(self, event: QKeyEvent):
@@ -444,6 +569,8 @@ class AlignerScreen(QWidget):
             self._on_shift(1)
         elif key == Qt.Key.Key_G:
             self._show_position()
+        elif key == Qt.Key.Key_A:
+            self._tabs.setCurrentIndex(2)
         elif key == Qt.Key.Key_F:
             self._on_finish()
         else:
@@ -541,6 +668,7 @@ class AlignerScreen(QWidget):
                 self._main_image.set_focal_point(self._pending_focal[0], self._pending_focal[1], is_pending=True)
             else:
                 self._main_image.clear_focal_point()
+            self._apply_crop_policy()
         
         prev_img, prev_focal = self.aligner.get_prev_image()
         logger.info(f"_load_original_images: prev_img={'not None' if prev_img is not None else 'None'}")
@@ -857,6 +985,14 @@ class AlignerScreen(QWidget):
         self._current_tab = index
         logger.info(f"[TAB_CHANGE] {old_tab} -> {index}: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}")
         
+        if old_tab == 2 and index != 2:
+            if hasattr(self, '_arrange_grid'):
+                display_order = self._arrange_grid.get_display_order()
+                default_order = list(range(len(self.aligner.image_files)))
+                if display_order != default_order:
+                    logger.info("[TAB_CHANGE] Auto-saving arrange order on tab leave")
+                    self._on_save_arrange_order()
+        
         if index == 0:
             self._is_preview_mode = False
             self._show_original_mode()
@@ -887,19 +1023,29 @@ class AlignerScreen(QWidget):
         elif index == 2:
             logger.info(f"[TAB_CHANGE] Arrange tab selected")
             if hasattr(self, '_arrange_grid'):
+                # Keep grid in sync with the core image set (discards can happen in
+                # other tabs); otherwise discarded images stay visible and orders desync.
+                self._arrange_grid.sync_from_core()
+                
                 self._arrange_grid._orientation = self._preview_orientation
                 
-                self.aligner.verify_and_fix_preview_integrity()
                 total, need_count = self.aligner.get_preview_generation_status()
                 
                 if need_count > 0:
-                    logger.info(f"[TAB_CHANGE] Arrange tab: Generating previews, need_count={need_count}")
-                    self._show_preview_modal(total)
-                    self.aligner.prepare_all_previews_async(
-                        progress_callback=self._on_preview_generation_progress
-                    )
+                    logger.info(f"[TAB_CHANGE] Arrange tab: need_count={need_count}, verifying integrity")
+                    self.aligner.verify_and_fix_preview_integrity()
+                    total, need_count = self.aligner.get_preview_generation_status()
+                    if need_count > 0:
+                        logger.info(f"[TAB_CHANGE] Arrange tab: Generating previews, need_count={need_count}")
+                        self._show_preview_modal(total)
+                        self.aligner.prepare_all_previews_async(
+                            progress_callback=self._on_preview_generation_progress
+                        )
+                    else:
+                        logger.info(f"[TAB_CHANGE] Arrange tab: Previews exist after verify, building grid")
+                        self._arrange_grid._build_grid()
                 else:
-                    logger.info(f"[TAB_CHANGE] Arrange tab: Previews exist, building grid")
+                    logger.info(f"[TAB_CHANGE] Arrange tab: All previews exist, building grid")
                     self._arrange_grid._build_grid()
     
     def _on_dot_clicked(self, idx):
@@ -917,6 +1063,8 @@ class AlignerScreen(QWidget):
     def _on_dots_moved(self, from_index, to_index):
         """Handle drag-and-drop reordering of navigation dots."""
         if self.aligner.move_image(from_index, to_index):
+            if hasattr(self, '_arrange_grid'):
+                self._arrange_grid.sync_from_core()
             self._sync_all()
     
     def _on_save_and_next(self):
@@ -970,17 +1118,61 @@ class AlignerScreen(QWidget):
             self._preview_orientation = "landscape"
             self.aligner.ensure_preview_for_current(self._preview_orientation)
     
+    def _current_target_dims(self):
+        """Target (w, h) for the current preview orientation."""
+        w = self.config.get('target_width', 2560)
+        h = self.config.get('target_height', 1440)
+        if self._preview_orientation == 'portrait':
+            return (h, w)
+        return (w, h)
+
+    def _apply_crop_policy(self):
+        tw, th = self._current_target_dims()
+        self._main_image.set_crop_policy(tw, th, self.aligner.max_zoom)
+
+    def _on_max_zoom_changed(self, value):
+        zoom = value * 0.5
+        self.aligner.max_zoom = zoom
+        self._zoom_value_label.setText(f"{zoom:.1f}x")
+        self.config['max_zoom'] = zoom
+        self._persist_max_zoom(zoom)
+        if hasattr(self, '_main_image'):  # not yet created during header setup
+            self._apply_crop_policy()
+        # Regenerate all previews with the new crop
+        self.aligner.preview_dirty = set(range(len(self.aligner.image_files)))
+        logger.info(f"[CROP] max_zoom={zoom:.1f}")
+
+    def _persist_max_zoom(self, zoom):
+        import json
+        cfg_path = Path(__file__).parent.parent / "config.json"
+        cfg = {}
+        if cfg_path.exists():
+            try:
+                with open(cfg_path, 'r') as f:
+                    cfg = json.load(f)
+            except Exception:
+                cfg = {}
+        cfg['max_zoom'] = zoom
+        try:
+            with open(cfg_path, 'w') as f:
+                json.dump(cfg, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[CROP] Could not persist max_zoom: {e}")
+
     def _on_toggle_orientation(self):
-        """Toggle between landscape and portrait preview in Preview mode."""
-        if self._current_tab != 1:
-            return
-        
+        """Toggle between landscape and portrait preview."""
         self._preview_orientation = "portrait" if self._preview_orientation == "landscape" else "landscape"
-        self.aligner.ensure_preview_for_current(self._preview_orientation)
-        self._load_preview_images()
         
         if hasattr(self, '_arrange_grid'):
             self._arrange_grid._orientation = self._preview_orientation
+            self._arrange_grid.clear_cache()
+        
+        if self._current_tab == 1:
+            self.aligner.ensure_preview_for_current(self._preview_orientation)
+            self._load_preview_images()
+        elif self._current_tab == 2 and hasattr(self, '_arrange_grid'):
+            self._arrange_grid._build_grid()
+        self._apply_crop_policy()
     
     def _on_clear_focal(self):
         """Clear focal point for current image."""
@@ -1010,6 +1202,9 @@ class AlignerScreen(QWidget):
         logger.info(f"[DISCARD] After discard: current_idx={self.aligner.current_idx}, total_images={self.aligner.total_images}")
         
         self._pending_focal = None
+        
+        if hasattr(self, '_arrange_grid'):
+            self._arrange_grid.sync_from_core()
         
         # Use appropriate sync based on current mode
         if self._current_tab == 0:
@@ -1107,6 +1302,8 @@ class AlignerScreen(QWidget):
     def _on_shift(self, direction):
         """Shift current image position."""
         if self.aligner.shift_current(direction):
+            if hasattr(self, '_arrange_grid'):
+                self._arrange_grid.sync_from_core()
             self._sync_all()
     
     def _show_position(self):
@@ -1117,6 +1314,12 @@ class AlignerScreen(QWidget):
     
     def _on_finish(self):
         """Show end menu dialog."""
+        if hasattr(self, '_arrange_grid'):
+            display_order = self._arrange_grid.get_display_order()
+            default_order = list(range(len(self.aligner.image_files)))
+            if display_order != default_order:
+                logger.info("[FINISH] Auto-saving arrange order before export")
+                self._on_save_arrange_order()
         self._end_menu = EndMenu(self.aligner, self)
         self._end_menu.go_back_clicked.connect(self._on_end_menu_back)
         self._end_menu.export_complete.connect(self._on_export_complete)
@@ -1127,8 +1330,8 @@ class AlignerScreen(QWidget):
         pass  # Just close the dialog, nothing else needed
     
     def _on_export_complete(self, stats):
-        """Handle export completion from end menu."""
-        pass
+        """Handle export completion - finish the batch and return to opener."""
+        self.aligner_finished.emit(stats)
     
     def _on_help(self):
         """Show help modal."""
