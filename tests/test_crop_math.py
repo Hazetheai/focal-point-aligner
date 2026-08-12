@@ -4,10 +4,18 @@ import numpy as np
 
 from aligner_core import (
     compute_crop,
+    crop_to_widget,
     render_aligned,
     DEFAULT_MAX_ZOOM,
     UPSCALE_CAP,
 )
+
+
+def test_crop_to_widget_mapping():
+    # orig 4000x3000 shown in 800x600 widget at img origin (10, 5)
+    wx, wy, ww, wh = crop_to_widget(0, 0, 2000, 1500, 10, 5, 800, 600, 4000, 3000)
+    assert (wx, wy, ww, wh) == (10, 5, 400, 300)
+    # half-of-original crop maps to half-of-display
 
 
 def _make_img(w, h):
