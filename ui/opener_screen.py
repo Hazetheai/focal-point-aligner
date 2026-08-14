@@ -17,6 +17,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 import styles
 from batch import BatchManager
 from ui.merge_dialog import MergeDialog
+from aligner_core import DEFAULT_MAX_ZOOM
 
 
 CONFIG_FILE = Path(__file__).parent.parent / "config.json"
@@ -364,6 +365,7 @@ class OpenerScreen(QWidget):
             'output_folder': output_folder,
             'target_width': self.width_spin.value(),
             'target_height': self.height_spin.value(),
+            'max_zoom': self._config.get('max_zoom', DEFAULT_MAX_ZOOM),
         }
         
         # Emit signal with config
@@ -523,4 +525,5 @@ class OpenerScreen(QWidget):
             'root': str(self._batch_root),
             'target_width': self.width_spin.value(),
             'target_height': self.height_spin.value(),
+            'max_zoom': self._config.get('max_zoom', DEFAULT_MAX_ZOOM),
         }

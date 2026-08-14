@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from PyQt6.QtCore import Qt
 
 import styles
+from aligner_core import DEFAULT_MAX_ZOOM
 from ui.opener_screen import OpenerScreen
 from ui.aligner_screen import AlignerScreen
 from ui.logger import logger
@@ -47,6 +48,7 @@ class FocalPointAlignerApp(QApplication):
         self.batch_manager = None
         self._batch_target_width = 2560
         self._batch_target_height = 1440
+        self._batch_max_zoom = DEFAULT_MAX_ZOOM
         self._batch_seen = set()
     
     def start(self):
@@ -87,6 +89,7 @@ class FocalPointAlignerApp(QApplication):
         self.batch_manager = BatchManager(self.batch_root)
         self._batch_target_width = config.get('target_width', 2560)
         self._batch_target_height = config.get('target_height', 1440)
+        self._batch_max_zoom = config.get('max_zoom', DEFAULT_MAX_ZOOM)
         self._batch_seen = set()
         self.opener.hide()
         self._open_next_batch_folder()
@@ -115,6 +118,7 @@ class FocalPointAlignerApp(QApplication):
             'output_folder': str(self.batch_manager.aligned_output_for(nxt)),
             'target_width': self._batch_target_width,
             'target_height': self._batch_target_height,
+            'max_zoom': self._batch_max_zoom,
         }
         self.current_config = config
         self.aligner_screen = AlignerScreen(config)
