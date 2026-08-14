@@ -62,7 +62,7 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 - Top-level keys used by the app: `discarded` (filenames), `order` (current arrange order as filenames — added for order persistence), `current_idx`, `alignment_mode`, `preview_state`, `_meta`.
 - **`load_focal_points()`** re-applies the saved `order` via `_reorder_files_by_names()` (remaps all index dicts by filename).
 - Preview folders are `<input_folder>_preview_landscape` / `_preview_portrait`, files named `{idx:04d}.jpg` keyed to `image_files` position — they must be renumbered after any discard/reorder (see `discard_current`, `apply_arrange_order`).
-- `config.json` at project root holds opener prefs (`last_input_dir`, `last_output_dir`, `target_width/height`, plus batch `mode` and `last_batch_root_dir`). Gitignored.
+- `config.json` at project root holds opener prefs (`last_input_dir`, `last_output_dir`, `target_width/height`, `max_zoom`, plus batch `mode` and `last_batch_root_dir`). Gitignored.
 
 ## Key invariants — read before touching the Arrange/reorder code
 
@@ -86,6 +86,20 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 
 `Enter` save+next · `Space` skip · `←→` navigate · `X` discard · `Del` clear focal · `P` preview · `O` toggle landscape/portrait · `A` Arrange tab · `[`/`]` shift order · `R` reset focal points · `F` finish/export · `Escape` finish batch (returns to opener) · `G` show position.
 
+## Image-size framing (crop math)
+
+- `aligner_core.compute_crop()` — bounded-zoom crop rect in original pixels.
+  `scale = clamp(max(cover, focal_scale), 0 .. cover*max_zoom)`; `cover` fits the
+  whole image to the frame. `aligner_core.render_aligned()` renders to exactly
+  target dims and uses a **blur-fill** path when `cover > UPSCALE_CAP`.
+- Tunable constants: `DEFAULT_MAX_ZOOM = 3.0` (slider default, range 1.0-6.0),
+  `UPSCALE_CAP = 2.0`. Slider persists `max_zoom` in `config.json`. Keep preview,
+  export, and the Original-tab overlay in sync by using `render_aligned` /
+  `compute_crop` and `core.max_zoom` everywhere (see `ui/preview_worker.py`,
+  `ui/image_display.py`).
+- Zoom slider lives in the Original-tab header (`ui/aligner_screen.py`); changing
+  it marks all previews dirty so they regenerate. Tests: `tests/test_crop_math.py`.
+
 ## Return-to-opener flow (recent behavior change)
 
 `main.py:on_aligner_finished` now hides/closes the aligner screen and **shows the opener again** instead of quitting the app (previously it called `self.quit()`). Triggered by:
@@ -105,6 +119,7 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 ## Testing
 
 - `tests/test_cli.py` — CLI subprocess tests (needs `cli.py` runnable with the venv Python).
+- `tests/test_crop_math.py` — `compute_crop` / `render_aligned` framing and zoom-cap tests.
 - `tests/test_batch.py` — `batch.py` unit tests (discovery, done-detection, merge prefix/dedupe, move-aligned).
 - `tests/test_arrange_order.py` — regression tests for discard → reorder → persist → reload, plus headless grid sync (copied regression: discarded images must vanish from the Arrange grid, arrange order must reach export and survive reload).
 - `tests/test_return_to_opener.py` — return-to-opener flow AND batch auto-advance (done-based advance + escape-without-export no-loop).

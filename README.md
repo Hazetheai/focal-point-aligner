@@ -13,6 +13,24 @@ A tool for aligning images by selecting focal points. Images are processed so th
 - **Merge folders** — combine several folders (raw or aligned) into one, prefixing each file with its source folder name
 - **Move aligned** — gather all `<sub>_aligned` output folders into an adjacent `<root>_aligned` folder
 
+## Sensible framing & image sizes
+
+Aligned output fits any source: large photos are downscaled to frame the whole
+image (or zoom toward the focal point up to a cap); tiny photos are **blur-fill**
+composited (sharp subject over a blurred, darkened copy — no pixelated upscale).
+
+Tunable constants (`aligner_core.py`) — tweak here if framing ever feels wrong:
+
+| Constant | Default | Meaning |
+|----------|---------|---------|
+| `DEFAULT_MAX_ZOOM` | `3.0` | Default zoom (the slider starts here). Cap = full-frame fit × this. |
+| `UPSCALE_CAP` | `2.0` | Max real upscale of the sharp subject before the blur-fill path engages. |
+
+Zoom slider (Original tab): **1.0× – 6.0× in 0.5 steps**, default **3.0×**. The
+slider caps how far in toward the focal point the crop may go; the dimmed overlay
+on the Original tab shows exactly what will be kept vs cropped. Per-session and
+persisted in `config.json`.
+
 ## Installation
 
 ```bash
