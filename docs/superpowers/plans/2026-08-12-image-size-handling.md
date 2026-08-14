@@ -1,6 +1,6 @@
 # Image Size Handling Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Fix over-zoom on oversized images and pixelation on undersized images, add a live crop-region overlay, and add an adjustable zoom slider (1×–6×, default 3×) so preview and export always frame sensibly.
 
@@ -46,7 +46,7 @@ Behavior checks (target 2560×1440):
 - Modify: `aligner_core.py` (add constants near top, add `compute_crop` after `calculate_transformation`)
 - Test: `tests/test_crop_math.py`
 
-- [ ] **Step 1: Write the constants**
+- [x] **Step 1: Write the constants**
 
 In `aligner_core.py`, after `JSON_VERSION = "2.0"` (line ~30) add:
 
@@ -57,7 +57,7 @@ DEFAULT_MAX_ZOOM = 3.0  # slider default (range 1.0-6.0); cap = cover * this
 UPSCALE_CAP = 2.0       # max real upscale of the sharp subject before blur-fill
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `tests/test_crop_math.py` (pure Python, no Qt import; import from `aligner_core` directly — it has no Qt deps):
 
@@ -118,12 +118,12 @@ def test_out_of_bounds_focal_clamps():
         assert x >= 0 and y >= 0 and x + w <= 12000 and y + h <= 8000
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [x] **Step 3: Run test to verify it fails**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_crop_math.py -v`
 Expected: `FAILED ... - ImportError: cannot import name 'compute_crop'`
 
-- [ ] **Step 4: Write the minimal implementation**
+- [x] **Step 4: Write the minimal implementation**
 
 In `aligner_core.py`, after `calculate_transformation` (line ~78) add:
 
@@ -167,12 +167,12 @@ def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h, max_zoom=
     return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_crop_math.py -v`
 Expected: PASS (the five `compute_crop` tests above; the `render_aligned` tests added in Task 3 will still fail — that's expected, run only `tests/test_crop_math.py`).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add tests/test_crop_math.py aligner_core.py
@@ -187,7 +187,7 @@ git commit -m "feat(crop): add bounded-zoom compute_crop for image framing"
 - Modify: `aligner_core.py` (add `render_aligned`; rewrite `align_single_image` body)
 - Test: `tests/test_crop_math.py`
 
-- [ ] **Step 1: Write the failing tests (add to `tests/test_crop_math.py`)**
+- [x] **Step 1: Write the failing tests (add to `tests/test_crop_math.py`)**
 
 ```python
 def _make_img(w, h):
@@ -232,12 +232,12 @@ def test_render_aligned_none_focal_defaults_to_center():
     assert aligned.shape[:2] == (1440, 2560)
 ```
 
-- [ ] **Step 2: Run to verify they fail**
+- [x] **Step 2: Run to verify they fail**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_crop_math.py -v`
 Expected: FAILED with `ImportError` / `TypeError: render_aligned() ...`
 
-- [ ] **Step 3: Write `render_aligned` and rewrite `align_single_image`**
+- [x] **Step 3: Write `render_aligned` and rewrite `align_single_image`**
 
 Add to `aligner_core.py` (after `compute_crop`):
 
@@ -328,7 +328,7 @@ to:
             )
 ```
 
-- [ ] **Step 4: Add `max_zoom` to the core**
+- [x] **Step 4: Add `max_zoom` to the core**
 
 In `FocalPointAlignerCore.__init__` (aligner_core.py ~line 128, after `target_height`), add:
 
@@ -336,17 +336,17 @@ In `FocalPointAlignerCore.__init__` (aligner_core.py ~line 128, after `target_he
         self.max_zoom = config.get('max_zoom', DEFAULT_MAX_ZOOM)
 ```
 
-- [ ] **Step 5: Run tests to verify pass**
+- [x] **Step 5: Run tests to verify pass**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_crop_math.py -v`
 Expected: PASS (7 `render_aligned` tests + 5 `compute_crop` = 12 total). The `crop_to_widget` helper is imported in Task 5 via `_crop_to_widget`.
 
-- [ ] **Step 6: Full suite**
+- [x] **Step 6: Full suite**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: previous 34 tests still PASS (export path swap must not regress batch/cli tests). If `test_cli.py` runs a (legacy) export, confirm it passes; legacy `align_focal_points.py`/`scripts/` copies are untouched.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add tests/test_crop_math.py aligner_core.py
@@ -361,7 +361,7 @@ git commit -m "feat(crop): add render_aligned with blur-fill fallback, use it in
 - Modify: `ui/preview_worker.py`
 - Test: `tests/test_return_to_opener.py` (existing) — manual verification here
 
-- [ ] **Step 1: Rewrite the preview rendering**
+- [x] **Step 1: Rewrite the preview rendering**
 
 In `ui/preview_worker.py`, change the import (line 14):
 
@@ -394,17 +394,17 @@ Replace `_align_single_image` (lines 62-95) with:
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 90])
 ```
 
-- [ ] **Step 2: Verify no stale references to `calculate_transformation`**
+- [x] **Step 2: Verify no stale references to `calculate_transformation`**
 
 Run: `grep -n "calculate_transformation" ui/preview_worker.py`
 Expected: no matches. (`calculate_transformation` remains defined in `aligner_core.py` and its legacy copies; the GUI no longer calls it.)
 
-- [ ] **Step 3: Run test suite**
+- [x] **Step 3: Run test suite**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: still green (preview worker changes are only exercised via the GUI smoke test; core tests unaffected).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ui/preview_worker.py
@@ -419,11 +419,11 @@ git commit -m "feat(crop): previews use render_aligned and configured target dim
 - Modify: `aligner_core.py`
 - Test: `tests/test_crop_math.py`
 
-- [ ] **Step 1: Promote `_crop_to_widget` to public `crop_to_widget`**
+- [x] **Step 1: Promote `_crop_to_widget` to public `crop_to_widget`**
 
 Rename the def (Task 2) `def _crop_to_widget(` → `def crop_to_widget(` so `ui/image_display.py` imports it. No other change.
 
-- [ ] **Step 2: Add a test**
+- [x] **Step 2: Add a test**
 
 Append to `tests/test_crop_math.py`:
 
@@ -439,12 +439,12 @@ def test_crop_to_widget_mapping():
     assert (wx, wy, ww, wh) == (10, 5, 400, 300)
 ```
 
-- [ ] **Step 3: Verify pass**
+- [x] **Step 3: Verify pass**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_crop_math.py -v`
 Expected: 13 tests PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add aligner_core.py tests/test_crop_math.py
@@ -459,7 +459,7 @@ git commit -m "feat(crop): expose crop_to_widget rect-mapping helper"
 - Modify: `ui/image_display.py`
 - Test: `tests/test_crop_math.py` (helper already covered)
 
-- [ ] **Step 1: Add crop policy state + setter**
+- [x] **Step 1: Add crop policy state + setter**
 
 In `Ui/image_display.py` `__init__` (after `self._pending_focal = None`, line 44) add:
 
@@ -486,7 +486,7 @@ Import `compute_crop` and `crop_to_widget` at the top of `ui/image_display.py` (
 from aligner_core import compute_crop, crop_to_widget
 ```
 
-- [ ] **Step 2: Draw the overlay in `paintEvent`**
+- [x] **Step 2: Draw the overlay in `paintEvent`**
 
 In `paintEvent` (line 262), after the focal crosshair drawing block ends (before `super().paintEvent`? — no: after drawing the crosshair, at the end of `paintEvent`, line ~317), add:
 
@@ -517,14 +517,14 @@ In `paintEvent` (line 262), after the focal crosshair drawing block ends (before
                 painter.drawRect(int(wx), int(wy), int(ww), int(wh))
 ```
 
-- [ ] **Step 3: Verify import/syntax + suite**
+- [x] **Step 3: Verify import/syntax + suite**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: still green (overlay painting is only visible at runtime; offscreen tests don't fail on paint code). Also run a quick import check:
 `QT_QPA_PLATFORM=offscreen ./venv/bin/python -c "from ui.image_display import ImageDisplayWidget; print('ok')"`
 Expected: prints `ok`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ui/image_display.py
@@ -539,7 +539,7 @@ git commit -m "feat(crop): dim outside the crop region on the Original tab"
 - Modify: `ui/aligner_screen.py`
 - Test: `tests/test_return_to_opener.py` (existing, must stay green)
 
-- [ ] **Step 1: Helper for current target dims (orientation-aware)**
+- [x] **Step 1: Helper for current target dims (orientation-aware)**
 
 Add a method near `_on_toggle_orientation` (line ~1098):
 
@@ -557,7 +557,7 @@ Add a method near `_on_toggle_orientation` (line ~1098):
         self._main_image.set_crop_policy(tw, th, self.aligner.max_zoom)
 ```
 
-- [ ] **Step 2: Create the zoom slider in the header row**
+- [x] **Step 2: Create the zoom slider in the header row**
 
 In `_create_header` (after the `_btn_orientation` wiring, line ~366), add:
 
@@ -584,7 +584,7 @@ In `_create_header` (after the `_btn_orientation` wiring, line ~366), add:
         header_layout.addWidget(self._zoom_value_label)
 ```
 
-- [ ] **Step 3: Slider handler**
+- [x] **Step 3: Slider handler**
 
 Add:
 
@@ -620,13 +620,13 @@ Add:
             logger.warning(f"[CROP] Could not persist max_zoom: {e}")
 ```
 
-- [ ] **Step 4: Apply crop policy at image load, orientation change, and init**
+- [x] **Step 4: Apply crop policy at image load, orientation change, and init**
 
 - In `_load_original_images` (aligner_screen.py line ~634), after the `if current_img is not None:` block that calls `_main_image.set_image(...)` and `set_focal_point`/`clear_focal_point` (i.e. immediately after line ~648, before the `prev_img, prev_focal = ...` line), add `self._apply_crop_policy()`.
 - In `_on_toggle_orientation` (line ~1098), inside the `elif self._current_tab == 2 ...` branch and also when tab is 1 — simplest: add `self._apply_crop_policy()` at the end of the method body.
 - In `_init_ui`, add `self._apply_crop_policy()` at the end of the method (after `self.setFocus()`).
 
-- [ ] **Step 5: Verify suite + smoke**
+- [x] **Step 5: Verify suite + smoke**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: green.
@@ -642,7 +642,7 @@ except Exception as e:
 "`
 Expected: prints `ok`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add ui/aligner_screen.py
@@ -656,7 +656,7 @@ git commit -m "feat(crop): zoom slider controls max_zoom and invalidates preview
 **Files:**
 - Modify: `ui/opener_screen.py`, `main.py`
 
-- [ ] **Step 1: Opener — include `max_zoom` in emitted configs and persist**
+- [x] **Step 1: Opener — include `max_zoom` in emitted configs and persist**
 
 In `ui/opener_screen.py`, add `from aligner_core import DEFAULT_MAX_ZOOM` to imports.
 
@@ -664,7 +664,7 @@ In `on_start_clicked` (line ~307), inside the `else` config dict (lines 362-367)
 
 In `_build_batch_page`/`_apply_batch_config` (batch config dict around lines 524-525) add the same `'max_zoom': self._config.get('max_zoom', DEFAULT_MAX_ZOOM),`. (`_save_batch_config` at ~462 already persists `_config` wholesale, so `max_zoom` written by the aligner screen survives; no extra work there.)
 
-- [ ] **Step 2: `main.py` — carry `max_zoom` into batch per-folder config**
+- [x] **Step 2: `main.py` — carry `max_zoom` into batch per-folder config**
 
 In `main.py`, add `from aligner_core import DEFAULT_MAX_ZOOM` to imports and in `on_batch_started` (line ~88) after `_batch_target_height` add:
 
@@ -674,12 +674,12 @@ In `main.py`, add `from aligner_core import DEFAULT_MAX_ZOOM` to imports and in 
 
 In `_open_next_batch_folder` config dict (lines 113-118) add `'max_zoom': self._batch_max_zoom,`.
 
-- [ ] **Step 3: Verify suite**
+- [x] **Step 3: Verify suite**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: green.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ui/opener_screen.py main.py
@@ -693,7 +693,7 @@ git commit -m "feat(crop): thread max_zoom through opener and batch config"
 **Files:**
 - Modify: `README.md`, `AGENTS.md`
 
-- [ ] **Step 1: README — "Sensible framing & image sizes" section**
+- [x] **Step 1: README — "Sensible framing & image sizes" section**
 
 Add a section (near the top-level features list) with an explicit "tweak these" table. Numbers must match `aligner_core.py` exactly:
 
@@ -717,7 +717,7 @@ on the Original tab shows exactly what will be kept vs cropped. Per-session and
 persisted in `config.json`.
 ```
 
-- [ ] **Step 2: AGENTS.md — architecture note + constants**
+- [x] **Step 2: AGENTS.md — architecture note + constants**
 
 In `AGENTS.md`, in the "Batch mode" section area (or a new short subsection), add:
 
@@ -740,12 +740,12 @@ In `AGENTS.md`, in the "Batch mode" section area (or a new short subsection), ad
 Also update the tests list / architecture table rows if convenient (e.g. add
 `decode_crop`… no — just add the `tests/test_crop_math.py` bullet under Testing).
 
-- [ ] **Step 3: Verify no stale mention of `calculate_transformation` in docs**
+- [x] **Step 3: Verify no stale mention of `calculate_transformation` in docs**
 
 Run: `grep -rn "calculate_transformation" README.md AGENTS.md || echo none`
 Expected: none (docs don't document that function).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md AGENTS.md
@@ -758,12 +758,12 @@ git commit -m "docs(crop): document DEFAULT_MAX_ZOOM, UPSCALE_CAP, and the zoom 
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Suite**
+- [x] **Step 1: Suite**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: all tests PASS (existing 34 + 13 new = 47).
 
-- [ ] **Step 2: Real-image smoke**
+- [x] **Step 2: Real-image smoke**
 
 Create a temp folder with one large (e.g. 12000×8000) and one tiny (500×300) JPEG, then render both through `render_aligned` and assert dims + blur-fill flag:
 
@@ -782,7 +782,7 @@ PY
 ```
 Expected: prints `smoke ok: large-> False tiny blur-> True`.
 
-- [ ] **Step 3: GUI smoke (offscreen)**
+- [x] **Step 3: GUI smoke (offscreen)**
 
 Run:
 ```bash
@@ -801,6 +801,6 @@ PY
 ```
 Expected: prints `imports ok 3.0 2.0`.
 
-- [ ] **Step 4: Final commit (if any residual)**
+- [x] **Step 4: Final commit (if any residual)**
 
 If any fixups were needed, commit them; otherwise confirm `git status` shows only the pre-existing arrange-tab files (`ui/arrange_grid.py`, `ui/end_menu.py`, and any leftover `.opencode/`/spec files) as uncommitted.
