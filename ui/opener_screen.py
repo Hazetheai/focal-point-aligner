@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QLineEdit, QSpinBox, QGroupBox,
     QFileDialog, QMessageBox, QGridLayout, QStackedWidget,
-    QListWidget, QListWidgetItem, QRadioButton, QButtonGroup
+    QListWidget, QListWidgetItem, QRadioButton, QButtonGroup,
+    QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -429,6 +430,8 @@ class OpenerScreen(QWidget):
         list_group.setStyleSheet(styles.CARD_STYLE)
         list_lay = QVBoxLayout()
         self.batch_list = QListWidget()
+        self.batch_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         list_lay.addWidget(self.batch_list, 1)
         btn_row = QHBoxLayout()
         refresh_btn = QPushButton("Refresh")
