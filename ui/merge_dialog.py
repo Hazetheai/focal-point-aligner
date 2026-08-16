@@ -3,6 +3,7 @@ Merge dialog: combine images from multiple folders into one output folder,
 prefixing each file with its source folder name.
 """
 
+import os
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 
 import styles
-from batch import merge_folders
+from batch import merge_folders, folder_is_aligned
 
 
 class MergeDialog(QDialog):
@@ -106,9 +107,6 @@ class MergeDialog(QDialog):
             self._add_source(Path(dlg))
 
     def _on_merge(self):
-        import os
-        from batch import folder_is_aligned
-
         sources = [Path(self.source_list.item(i).text())
                    for i in range(self.source_list.count())]
         if not sources:
@@ -117,10 +115,13 @@ class MergeDialog(QDialog):
         name = self.name_edit.text().strip() or "merged"
         if all(folder_is_aligned(s) for s in sources) and not name.lower().endswith("_aligned"):
             name += "_aligned"
-        try:
-            parent = Path(os.path.commonpath([str(s) for s in sources]))
-        except ValueError:
+        if len(sources) == 1:
             parent = sources[0].parent
+        else:
+            try:
+                parent = Path(os.path.commonpath([str(s) for s in sources]))
+            except ValueError:
+                parent = sources[0].parent
         output = parent / name
         report = merge_folders(
             sources, output, use_aligned=self.aligned_check.isChecked())

@@ -232,11 +232,11 @@ Run:
 ```bash
 QT_QPA_PLATFORM=offscreen ./venv/bin/python - <<'PY'
 import sys
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QAbstractItemView
 app = QApplication([])
 from ui.merge_dialog import MergeDialog
 d = MergeDialog(sources=["/tmp/a", "/tmp/b"])
-assert d.source_list.selectionMode() == 3  # ExtendedSelection
+assert d.source_list.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
 assert d.name_edit.text() == "merged"
 print("merge dialog ok")
 PY
