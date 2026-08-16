@@ -16,7 +16,7 @@
 - Modify: `batch.py`
 - Test: `tests/test_batch.py`
 
-- [ ] **Step 1: Write failing tests for `discover_all_folders`**
+- [x] **Step 1: Write failing tests for `discover_all_folders`**
 
 Append to `tests/test_batch.py`:
 
@@ -60,12 +60,12 @@ def test_folder_is_aligned(tmp_path):
     assert folder_is_aligned(root / "beach") is False
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_batch.py::test_discover_all_includes_aligned_folders tests/test_batch.py::test_discover_all_excludes_discarded_and_preview tests/test_batch.py::test_aligned_folder_in_queue_is_done tests/test_batch.py::test_folder_is_aligned -v`
 Expected: 4 FAIL (AttributeError / ImportError), `test_discover_subfolders_still_skips_aligned` PASS.
 
-- [ ] **Step 3: Implement in `batch.py`**
+- [x] **Step 3: Implement in `batch.py`**
 
 In `batch.py`, after `discover_subfolders` (line ~81), add:
 
@@ -125,12 +125,12 @@ def folder_is_aligned(folder) -> bool:
     return _contains_images(_aligned_output_for(folder))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/test_batch.py -v`
 Expected: all PASS (existing + 5 new).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add batch.py tests/test_batch.py
@@ -144,7 +144,7 @@ git commit -m "feat(batch): list aligned folders in queue; add folder_is_aligned
 **Files:**
 - Modify: `ui/merge_dialog.py`
 
-- [ ] **Step 1: Multi-select on the source list**
+- [x] **Step 1: Multi-select on the source list**
 
 In `_build_ui`, after `self.source_list = QListWidget()` (line ~52) add:
 
@@ -163,7 +163,7 @@ from PyQt6.QtWidgets import (
 )
 ```
 
-- [ ] **Step 2: Replace output browse with a name field**
+- [x] **Step 2: Replace output browse with a name field**
 
 Replace the `out_row` block (lines ~67-76) with:
 
@@ -191,7 +191,7 @@ Remove `_browse_output` (lines ~106-110). Update the help text (lines ~43-50):
 
 Remove `QFileDialog` from the import block if now unused (it is unused after removing `_browse_add`/`_browse_output` is NOT the case — `_browse_add` still uses it; keep it).
 
-- [ ] **Step 3: Compute destination and auto-suffix in `_on_merge`**
+- [x] **Step 3: Compute destination and auto-suffix in `_on_merge`**
 
 Replace the body of `_on_merge` (lines ~112-131) with:
 
@@ -226,7 +226,7 @@ Replace the body of `_on_merge` (lines ~112-131) with:
         self.accept()
 ```
 
-- [ ] **Step 4: Sanity-import the dialog offscreen**
+- [x] **Step 4: Sanity-import the dialog offscreen**
 
 Run:
 ```bash
@@ -243,7 +243,7 @@ PY
 ```
 Expected: prints `merge dialog ok`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add ui/merge_dialog.py
@@ -257,7 +257,7 @@ git commit -m "feat(merge): multi-select sources, name the merged folder, auto _
 **Files:**
 - Modify: `ui/opener_screen.py`
 
-- [ ] **Step 1: Enable extended selection on `batch_list`**
+- [x] **Step 1: Enable extended selection on `batch_list`**
 
 In `_build_batch_page`, after `self.batch_list = QListWidget()` (line ~431) add:
 
@@ -268,13 +268,13 @@ In `_build_batch_page`, after `self.batch_list = QListWidget()` (line ~431) add:
 
 Add `QAbstractItemView` to the `PyQt6.QtWidgets` import block (lines ~9-14).
 
-- [ ] **Step 2: Sanity-check `get_selected_batch_paths`**
+- [x] **Step 2: Sanity-check `get_selected_batch_paths`**
 
 The existing `get_selected_batch_paths()` (line ~487) already returns
 `[item.data(...) for item in self.batch_list.selectedItems()]`, which now
 yields multiple paths. No change needed.
 
-- [ ] **Step 3: Import-check the opener offscreen**
+- [x] **Step 3: Import-check the opener offscreen**
 
 Run:
 ```bash
@@ -289,7 +289,7 @@ PY
 ```
 Expected: prints `opener ok`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add ui/opener_screen.py
@@ -304,18 +304,18 @@ git commit -m "feat(opener): multi-select batches for merging"
 - Modify: `README.md`, `AGENTS.md`
 - Test: `tests/test_batch.py`
 
-- [ ] **Step 1: Run the full suite**
+- [x] **Step 1: Run the full suite**
 
 Run: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`
 Expected: all tests PASS.
 
-- [ ] **Step 2: Update `README.md` "Merge Folders" section**
+- [x] **Step 2: Update `README.md` "Merge Folders" section**
 
 Add a sentence: "Ctrl/Shift-click to select multiple folders. You can name the
 merged folder (default `merged`); if every selected folder is aligned, the
 output is automatically suffixed `_aligned`."
 
-- [ ] **Step 3: Update `AGENTS.md` batch-mode section**
+- [x] **Step 3: Update `AGENTS.md` batch-mode section**
 
 Add bullets:
 ```markdown
@@ -330,7 +330,7 @@ Add bullets:
   and a "Merged folder name:" field; output = common parent of sources / name.
 ```
 
-- [ ] **Step 4: Mark plan checkboxes done and commit**
+- [x] **Step 4: Mark plan checkboxes done and commit**
 
 ```bash
 git add README.md AGENTS.md docs/superpowers/plans/2026-08-16-batch-merge-enhancements.md

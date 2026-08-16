@@ -115,6 +115,15 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 - **Do not loop on escaped batches:** `main.py:on_batch_started` resets `_batch_seen`; `_open_next_batch_folder` skips folders already opened this session and skips done folders. Escaping without exporting leaves a folder "pending", so the next `Start Batch` resumes it (focal data survives in that folder's `<output_folder>/focal_points.json`).
 - Batch config in `main._open_next_batch_folder` always sets `output_folder` to `<root>/<sub>_aligned` so done-detection and the export destination agree.
 - Merge (`batch.merge_folders`) copies with `<source>_` prefix and never modifies sources; Move aligned (`batch.move_aligned_outputs`) physically moves `<sub>_aligned` folders into sibling `<root>_aligned`.
+- The batch **list** (`build_queue` via `discover_all_folders`) shows every
+  image-bearing subfolder including `*_aligned`; `*_aligned` folders report
+  `done=True`. Auto-advance (`next_pending`) uses the narrow
+  `discover_subfolders` and never re-opens aligned outputs.
+- `batch.folder_is_aligned(folder)` — True when a folder is `*_aligned` with
+  images or has an aligned output with images. The merge dialog auto-suffixes
+  `_aligned` to the output name when all sources are aligned.
+- Merge dialog (`ui/merge_dialog.py`) uses extended selection for multi-select
+  and a "Merged folder name:" field; output = common parent of sources / name.
 
 ## Testing
 

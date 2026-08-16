@@ -281,7 +281,7 @@ Escaping a folder without exporting keeps it marked pending, so a later **Start 
 
 ## Merge Folders
 
-The **Merge…** button (available in any mode) combines images from several folders into one output folder. Each image is copied with its source folder name prefixed to the filename, e.g. `img_0042.jpg` from folder `fuji` becomes `fuji_img_0042.jpg`. If a folder has an aligned output, its aligned images are used instead (disable via the "Use aligned outputs when present" checkbox). In batch mode, select batches in the list and use **Merge selected…**. Merge never modifies the source folders.
+The **Merge…** button (available in any mode) combines images from several folders into one output folder. Each image is copied with its source folder name prefixed to the filename, e.g. `img_0042.jpg` from folder `fuji` becomes `fuji_img_0042.jpg`. If a folder has an aligned output, its aligned images are used instead (disable via the "Use aligned outputs when present" checkbox). In batch mode, select batches in the list and use **Merge selected…**. Merge never modifies the source folders. Ctrl/Shift-click to select multiple folders. You can name the merged folder (default `merged`); if every selected folder is aligned, the output is automatically suffixed `_aligned`.
 
 ## Move Aligned
 
