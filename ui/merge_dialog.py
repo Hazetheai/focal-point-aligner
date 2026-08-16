@@ -8,7 +8,8 @@ from pathlib import Path
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
-    QLineEdit, QMessageBox, QFileDialog, QListWidget, QDialogButtonBox
+    QLineEdit, QMessageBox, QFileDialog, QListWidget, QDialogButtonBox,
+    QAbstractItemView,
 )
 
 import styles
@@ -43,13 +44,17 @@ class MergeDialog(QDialog):
         help_label = QLabel(
             "Combines images from the selected folders into one output folder.\n"
             "Each file is prefixed with its source folder name (e.g. fuji_img_0042.jpg).\n"
-            "If a folder has an aligned output, its aligned images are used instead."
+            "If a folder has an aligned output, its aligned images are used instead.\n"
+            "Tip: Ctrl/Shift-click to select multiple folders. If every selected\n"
+            "folder is aligned, '_aligned' is appended to the output name."
         )
         help_label.setStyleSheet(styles.LABEL_STYLE)
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
 
         self.source_list = QListWidget()
+        self.source_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.source_list, 1)
 
         btn_row = QHBoxLayout()
@@ -64,16 +69,13 @@ class MergeDialog(QDialog):
         btn_row.addStretch()
         layout.addLayout(btn_row)
 
-        out_row = QHBoxLayout()
-        out_row.addWidget(QLabel("Output folder:"))
-        self.output_edit = QLineEdit()
-        self.output_edit.setStyleSheet(styles.INPUT_FIELD)
-        out_row.addWidget(self.output_edit, 1)
-        browse_btn = QPushButton("Browse")
-        browse_btn.setStyleSheet(styles.BUTTON_OUTLINE)
-        browse_btn.clicked.connect(self._browse_output)
-        out_row.addWidget(browse_btn)
-        layout.addLayout(out_row)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Merged folder name:"))
+        self.name_edit = QLineEdit()
+        self.name_edit.setText("merged")
+        self.name_edit.setStyleSheet(styles.INPUT_FIELD)
+        name_row.addWidget(self.name_edit, 1)
+        layout.addLayout(name_row)
 
         self.aligned_check = QCheckBox("Use aligned outputs when present")
         self.aligned_check.setChecked(True)
@@ -103,21 +105,23 @@ class MergeDialog(QDialog):
         if dlg:
             self._add_source(Path(dlg))
 
-    def _browse_output(self):
-        dlg = QFileDialog.getExistingDirectory(
-            self, "Output Folder", self.output_edit.text() or str(Path.home()))
-        if dlg:
-            self.output_edit.setText(dlg)
-
     def _on_merge(self):
+        import os
+        from batch import folder_is_aligned
+
         sources = [Path(self.source_list.item(i).text())
                    for i in range(self.source_list.count())]
         if not sources:
             QMessageBox.warning(self, "No Folders", "Add at least one folder to merge.")
             return
-        output = self.output_edit.text().strip()
-        if not output:
-            output = str(sources[0].parent / "merged")
+        name = self.name_edit.text().strip() or "merged"
+        if all(folder_is_aligned(s) for s in sources) and not name.lower().endswith("_aligned"):
+            name += "_aligned"
+        try:
+            parent = Path(os.path.commonpath([str(s) for s in sources]))
+        except ValueError:
+            parent = sources[0].parent
+        output = parent / name
         report = merge_folders(
             sources, output, use_aligned=self.aligned_check.isChecked())
         QMessageBox.information(
