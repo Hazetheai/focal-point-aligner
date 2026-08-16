@@ -44,6 +44,15 @@ def _aligned_images(folder: Path):
     return imgs or None
 
 
+def folder_is_aligned(folder) -> bool:
+    """True when a folder is aligned output: it is itself an '*_aligned'
+    folder containing images, or it has an aligned output containing images."""
+    folder = Path(folder)
+    if folder.name.lower().endswith("_aligned"):
+        return _contains_images(folder)
+    return _contains_images(_aligned_output_for(folder))
+
+
 class BatchManager:
     """Manages a root folder of sub-folders to be aligned in sequence."""
 
@@ -80,20 +89,41 @@ class BatchManager:
             folders.insert(0, self.root)
         return folders
 
+    def discover_all_folders(self) -> list:
+        """Every image-bearing subfolder, including '*_aligned' outputs,
+        for display in the batch list. Discarded and preview caches excluded."""
+        folders = []
+        for sub in sorted(self.root.iterdir()):
+            if not sub.is_dir():
+                continue
+            name = sub.name.lower()
+            if name == "discarded":
+                continue
+            if "_preview_" in name:
+                continue
+            if _contains_images(sub):
+                folders.append(sub)
+        if _contains_images(self.root):
+            folders.insert(0, self.root)
+        return folders
+
     def build_queue(self) -> list:
         """List of dicts {name, path, output, done} sorted for the UI."""
-        folders = self.discover_subfolders()
+        folders = self.discover_all_folders()
         queue = []
         for folder in folders:
             if folder == self.root:
                 name = f"{self.root.name} (root files)"
             else:
                 name = folder.name
+            done = self.is_done(folder)
+            if not done and folder.name.lower().endswith("_aligned"):
+                done = _contains_images(folder)
             queue.append({
                 "name": name,
                 "path": str(folder),
                 "output": str(self.aligned_output_for(folder)),
-                "done": self.is_done(folder),
+                "done": done,
             })
         return queue
 

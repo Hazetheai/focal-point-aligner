@@ -149,3 +149,41 @@ def test_move_aligned_destination_name(tmp_path):
     report = move_aligned_outputs(root)
     assert tmp_path.joinpath("whatever_aligned").is_dir()
     assert set(report["moved"]) == {str(tmp_path / "whatever_aligned" / "c_aligned")}
+
+
+def test_discover_all_includes_aligned_folders(tmp_path):
+    root = _make_root(tmp_path)
+    found = BatchManager(root).discover_all_folders()
+    names = sorted(p.name for p in found)
+    assert "city_aligned" in names
+    assert names == ["beach", "city", "city_aligned", "forest"]
+
+
+def test_discover_all_excludes_discarded_and_preview(tmp_path):
+    root = _make_root(tmp_path)
+    _img(root / "preview_cache_preview_landscape")
+    found = BatchManager(root).discover_all_folders()
+    names = sorted(p.name for p in found)
+    assert "discarded" not in names
+    assert "preview_cache_preview_landscape" not in names
+
+
+def test_aligned_folder_in_queue_is_done(tmp_path):
+    root = _make_root(tmp_path)
+    q = BatchManager(root).build_queue()
+    by_name = {item["name"]: item for item in q}
+    assert by_name["city_aligned"]["done"] is True
+
+
+def test_discover_subfolders_still_skips_aligned(tmp_path):
+    root = _make_root(tmp_path)
+    found = BatchManager(root).discover_subfolders()
+    assert sorted(p.name for p in found) == ["beach", "city", "forest"]
+
+
+def test_folder_is_aligned(tmp_path):
+    from batch import folder_is_aligned
+    root = _make_root(tmp_path)
+    assert folder_is_aligned(root / "city_aligned") is True
+    assert folder_is_aligned(root / "city") is True
+    assert folder_is_aligned(root / "beach") is False
