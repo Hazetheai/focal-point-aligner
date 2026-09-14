@@ -125,36 +125,14 @@ def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h, max_zoom=
 def render_aligned(img, focal, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
     """Render one image to exactly (target_h, target_w), handling any source size.
 
-    Returns (aligned, used_blur_fill). For sources so small they would need more
-    than UPSCALE_CAP real upscaling, the sharp image is capped and composited over
-    a blurred, darkened stretched copy of itself (no mushy upscale of the subject).
+    Returns (aligned, used_blur_fill). This function always performs cropping
+    and scaling to the target resolution; no blurred backdrop or filler is used.
     """
     h, w = img.shape[:2]
     if focal is None:
         focal = (w / 2, h / 2)
 
     cover = max(target_w / w, target_h / h)
-
-    if cover > UPSCALE_CAP:
-        # Blur-fill path: keep the subject sharp, fill the frame with its blur.
-        sharp_scale = UPSCALE_CAP
-        sub_w = max(1, int(round(w * sharp_scale)))
-        sub_h = max(1, int(round(h * sharp_scale)))
-        sharp = cv2.resize(img, (sub_w, sub_h), interpolation=cv2.INTER_LANCZOS4)
-
-        backdrop = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
-        backdrop = cv2.GaussianBlur(backdrop, (0, 0), 40)
-        backdrop = cv2.addWeighted(backdrop, 0.6, np.zeros_like(backdrop), 0.0, 0)
-        canvas = backdrop.copy()
-
-        off_x = int(round(target_w / 2 - focal[0] * sharp_scale))
-        off_y = int(round(target_h / 2 - focal[1] * sharp_scale))
-        # keep the subject fully inside the frame
-        off_x = min(max(off_x, 0), target_w - sub_w)
-        off_y = min(max(off_y, 0), target_h - sub_h)
-
-        canvas[off_y:off_y + sub_h, off_x:off_x + sub_w] = sharp
-        return canvas, True
 
     fx, fy = focal
     x, y, cw, ch = compute_crop(fx, fy, w, h, target_w, target_h, max_zoom)

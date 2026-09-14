@@ -44,13 +44,14 @@ def _aligned_images(folder: Path):
     return imgs or None
 
 
-def folder_is_aligned(folder) -> bool:
-    """True when a folder is aligned output: it is itself an '*_aligned'
-    folder containing images, or it has an aligned output containing images."""
+def folder_is_aligned(folder, use_aligned=True) -> bool:
+    """True when merging `folder` contributes aligned output for the given
+    checkbox state: the folder itself is an '*_aligned' folder containing
+    images, or (only when use_aligned) it has an aligned output with images."""
     folder = Path(folder)
     if folder.name.lower().endswith("_aligned"):
         return _contains_images(folder)
-    return _contains_images(_aligned_output_for(folder))
+    return use_aligned and _contains_images(_aligned_output_for(folder))
 
 
 class BatchManager:
@@ -101,7 +102,7 @@ class BatchManager:
                 continue
             if "_preview_" in name:
                 continue
-            if _contains_images(sub):
+            if _contains_images(sub) or _contains_images(_aligned_output_for(sub)):
                 folders.append(sub)
         if _contains_images(self.root):
             folders.insert(0, self.root)
@@ -119,10 +120,13 @@ class BatchManager:
             done = self.is_done(folder)
             if not done and folder.name.lower().endswith("_aligned"):
                 done = _contains_images(folder)
+            output = self.aligned_output_for(folder)
+            if folder.name.lower().endswith("_aligned"):
+                output = folder
             queue.append({
                 "name": name,
                 "path": str(folder),
-                "output": str(self.aligned_output_for(folder)),
+                "output": str(output),
                 "done": done,
             })
         return queue
@@ -135,15 +139,20 @@ class BatchManager:
         return None
 
 
-def merge_folders(sources, dest, use_aligned=True) -> dict:
+def merge_folders(sources, dest, use_aligned=True, delete_sources=False) -> dict:
     """Copy images from each source folder into dest, prefixing each file with
-    its source folder name. Returns a report dict."""
+    its source folder name. Returns a report dict.
+
+    dest is created lazily, only when the first image is copied. When
+    delete_sources is True, every source whose images were fully merged is
+    removed afterwards (by rmtree); failed sources are never deleted."""
     dest = Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
 
     merged_count = 0
     skipped = 0
     warnings = []
+    deleted = []
+    failed_sources = set()
     used_names = set()
 
     for src in sources:
@@ -162,6 +171,7 @@ def merge_folders(sources, dest, use_aligned=True) -> dict:
                 )
             except OSError as e:
                 skipped += 1
+                failed_sources.add(Path(src))
                 warnings.append(f"{src_name}: {e}")
                 continue
 
@@ -175,16 +185,36 @@ def merge_folders(sources, dest, use_aligned=True) -> dict:
                 new_name = f"{src_name}_{stem}_{k}{ext}"
             used_names.add(new_name.lower())
             try:
+                if merged_count == 0:
+                    dest.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(img, dest / new_name)
                 merged_count += 1
             except OSError as e:
                 skipped += 1
+                failed_sources.add(Path(src))
                 warnings.append(f"Could not copy {img.name} from {src_name}: {e}")
+
+    if delete_sources:
+        for src in sources:
+            src = Path(src)
+            if src in failed_sources:
+                continue
+            if not src.exists():
+                continue
+            if Path(dest) == src or Path(dest).is_relative_to(src):
+                warnings.append(f"Not deleting {src}: merged output lies inside it")
+                continue
+            try:
+                shutil.rmtree(src)
+                deleted.append(str(src))
+            except OSError as e:
+                warnings.append(f"Could not delete {src}: {e}")
 
     return {
         "merged_count": merged_count,
         "skipped": skipped,
         "warnings": warnings,
+        "deleted": deleted,
         "dest": str(dest),
     }
 

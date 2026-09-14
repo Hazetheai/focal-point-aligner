@@ -187,3 +187,88 @@ def test_folder_is_aligned(tmp_path):
     assert folder_is_aligned(root / "city_aligned") is True
     assert folder_is_aligned(root / "city") is True
     assert folder_is_aligned(root / "beach") is False
+
+
+def test_folder_is_aligned_respects_use_aligned(tmp_path):
+    from batch import folder_is_aligned
+    root = _make_root(tmp_path)
+    # An '*_aligned' folder itself is aligned regardless of the checkbox.
+    assert folder_is_aligned(root / "city_aligned", use_aligned=False) is True
+    # A raw folder only counts as aligned when use_aligned is on.
+    assert folder_is_aligned(root / "city", use_aligned=True) is True
+    assert folder_is_aligned(root / "city", use_aligned=False) is False
+    assert folder_is_aligned(root / "beach", use_aligned=True) is False
+
+
+def test_discover_all_includes_folder_with_only_aligned_images(tmp_path):
+    root = tmp_path / "photos"
+    root.mkdir()
+    (root / "gone").mkdir()                    # raw folder with no images left
+    _img(root / "gone_aligned")                # but its aligned output has images
+    found = BatchManager(root).discover_all_folders()
+    assert sorted(p.name for p in found) == ["gone", "gone_aligned"]
+
+
+def test_build_queue_aligned_folder_output_is_itself(tmp_path):
+    root = _make_root(tmp_path)
+    q = BatchManager(root).build_queue()
+    by_name = {item["name"]: item for item in q}
+    assert by_name["city_aligned"]["output"] == str(root / "city_aligned")
+
+
+def test_merge_delete_sources_when_requested(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    a = root / "a"
+    b = root / "b"
+    _img(a)
+    _img(b)
+    dest = tmp_path / "merged"
+    report = merge_folders([a, b], dest, use_aligned=False, delete_sources=True)
+    files = sorted(p.name for p in dest.iterdir())
+    assert files == ["a_0001.jpg", "b_0001.jpg"]
+    assert not a.exists() and not b.exists()
+    assert sorted(report["deleted"]) == sorted([str(a), str(b)])
+
+
+def test_merge_delete_keeps_failed_sources(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    ok = root / "ok"
+    bad = root / "bad.jpg"                       # a file, not a folder -> read error
+    _img(ok)
+    bad.write_bytes(b"not a folder")
+    dest = tmp_path / "merged"
+    report = merge_folders([ok, bad], dest, use_aligned=False, delete_sources=True)
+    files = sorted(p.name for p in dest.iterdir())
+    assert files == ["ok_0001.jpg"]
+    assert not ok.exists()
+    assert bad.exists()
+    assert report["deleted"] == [str(ok)]
+    assert report["skipped"] == 1
+
+
+def test_merge_all_failed_does_not_create_dest(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    not_a_dir = root / "broken.jpg"              # a file -> read error
+    not_a_dir.write_bytes(b"not a folder")
+    dest = tmp_path / "merged"
+    report = merge_folders([not_a_dir], dest, use_aligned=False, delete_sources=True)
+    assert report["merged_count"] == 0
+    assert not dest.exists()
+    assert not_a_dir.exists()
+    assert report["deleted"] == []
+
+
+def test_merge_delete_never_nukes_dest_inside_source(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    _img(root)
+    dest = root / "merged"                       # output nested inside the source
+    report = merge_folders([root], dest, use_aligned=False, delete_sources=True)
+    files = sorted(p.name for p in dest.iterdir())
+    assert files == ["root_0001.jpg"]
+    assert root.exists()                         # source kept; dest survived
+    assert report["deleted"] == []
+    assert any("merged output lies inside it" in w for w in report["warnings"])

@@ -54,6 +54,10 @@ class ImageDisplayWidget(QLabel):
         self._last_click_time = 0
         self._last_click_button = None
         
+        self._crop_scale = 1.0
+        self._scale_drag_active = False
+        self._scale_drag_start_y = None
+        
         self.setStyleSheet("""
             ImageDisplayWidget {
                 background-color: #1E1E2E;
@@ -236,6 +240,8 @@ class ImageDisplayWidget(QLabel):
                 self._last_click_time = 0
                 self.double_left_click.emit()
             else:
+                self._scale_drag_start_y = event.position().y()
+                self._scale_drag_active = True
                 pos = self.get_click_position(event)
                 logger.info(f"ImageDisplayWidget.mousePressEvent: converted position = {pos}")
                 self._last_click_button = button
@@ -270,6 +276,28 @@ class ImageDisplayWidget(QLabel):
             self.discard_requested.emit()
         
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Handle mouse movement for scale drag adjustment."""
+        if self._scale_drag_active and self._scale_drag_start_y is not None:
+            current_y = event.position().y()
+            delta_y = current_y - self._scale_drag_start_y
+            # Adjust crop scale: dragging up (negative delta) zooms out (decrease scale),
+            # dragging down (positive delta) zooms in (increase scale)
+            change = delta_y / 50.0  # sensitivity: 50px per 0.1 scale change
+            self._crop_scale = max(0.1, min(5.0, self._crop_scale - change))
+            self._scale_drag_start_y = current_y
+            self.update()
+        
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        """Handle mouse release to finalize scale drag."""
+        self._scale_drag_active = False
+        self._scale_drag_start_y = None
+        self.update()
+        
+        super().mouseReleaseEvent(event)
     
     def paintEvent(self, event):
         """Paint the image and focal point markers."""
@@ -334,8 +362,9 @@ class ImageDisplayWidget(QLabel):
             orig_h = self._original_height
             if orig_w > 0 and orig_h > 0 and self._displayed_pixmap_rect is not None:
                 img_x, img_y, disp_w, disp_h = self._displayed_pixmap_rect
+                effective_max_zoom = mz * self._crop_scale
                 cx, cy, cw, ch = compute_crop(
-                    focal_to_draw[0], focal_to_draw[1], orig_w, orig_h, tw, th, mz
+                    focal_to_draw[0], focal_to_draw[1], orig_w, orig_h, tw, th, effective_max_zoom
                 )
                 wx, wy, ww, wh = crop_to_widget(
                     cx, cy, cw, ch, img_x, img_y, disp_w, disp_h, orig_w, orig_h

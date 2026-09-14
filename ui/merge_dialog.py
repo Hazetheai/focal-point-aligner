@@ -47,7 +47,9 @@ class MergeDialog(QDialog):
             "Each file is prefixed with its source folder name (e.g. fuji_img_0042.jpg).\n"
             "If a folder has an aligned output, its aligned images are used instead.\n"
             "Tip: Ctrl/Shift-click to select multiple folders. If every selected\n"
-            "folder is aligned, '_aligned' is appended to the output name."
+            "folder is aligned, '_aligned' is appended to the output name.\n"
+            "'Delete source folders' removes each folder only after all its images\n"
+            "were copied; folders that failed are kept."
         )
         help_label.setStyleSheet(styles.LABEL_STYLE)
         help_label.setWordWrap(True)
@@ -82,6 +84,11 @@ class MergeDialog(QDialog):
         self.aligned_check.setChecked(True)
         self.aligned_check.setStyleSheet(styles.LABEL_STYLE)
         layout.addWidget(self.aligned_check)
+
+        self.delete_check = QCheckBox("Delete source folders after merging")
+        self.delete_check.setChecked(False)
+        self.delete_check.setStyleSheet(styles.LABEL_STYLE)
+        layout.addWidget(self.delete_check)
 
         buttons = QDialogButtonBox()
         back_btn = buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
@@ -124,13 +131,15 @@ class MergeDialog(QDialog):
                 parent = sources[0].parent
         output = parent / name
         report = merge_folders(
-            sources, output, use_aligned=self.aligned_check.isChecked())
-        QMessageBox.information(
-            self,
-            "Merge Complete",
-            f"Merged {report['merged_count']} images into:\n{report['dest']}\n\n"
-            + (f"{report['skipped']} skipped.\n" if report["skipped"] else "")
-            + ("Warnings:\n" + "\n".join(report["warnings"]) if report["warnings"] else "")
-        )
+            sources, output, use_aligned=self.aligned_check.isChecked(),
+            delete_sources=self.delete_check.isChecked())
+        msg = f"Merged {report['merged_count']} images into:\n{report['dest']}\n\n"
+        if report["skipped"]:
+            msg += f"{report['skipped']} skipped.\n"
+        if report["deleted"]:
+            msg += "Deleted source folder(s):\n" + "\n".join(report["deleted"]) + "\n"
+        if report["warnings"]:
+            msg += "Warnings:\n" + "\n".join(report["warnings"]) + "\n"
+        QMessageBox.information(self, "Merge Complete", msg)
         self.merge_complete.emit(report)
         self.accept()

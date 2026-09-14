@@ -10,7 +10,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QGroupBox, QRadioButton,
-    QMessageBox, QProgressBar, QFileDialog, QApplication
+    QMessageBox, QProgressBar, QFileDialog
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -180,17 +180,6 @@ class EndMenu(QDialog):
         
         self.aligner.set_alignment_mode(orientation)
         
-        preview_folder = self.aligner.get_preview_folder(orientation)
-        
-        if not preview_folder or not preview_folder.exists():
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Preview folder not found for {orientation} orientation.\n"
-                "Please switch to Preview mode and generate previews first."
-            )
-            return
-        
         reply = QMessageBox.question(
             self,
             "Confirm Export",
@@ -212,10 +201,10 @@ class EndMenu(QDialog):
         def do_export():
             total = self.aligner.total_images
             for i in range(total):
-                src = preview_folder / f"{i:04d}.jpg"
-                dst = self._output_folder / f"{i:04d}.jpg"
-                if src.exists():
-                    shutil.copy2(src, dst)
+                img_file = self.aligner.image_files[i]
+                focal = self.aligner.focal_points.get(i)
+                if focal is not None:
+                    self.aligner.align_single_image(i, img_file, focal, self._output_folder, orientation)
                 self.progress_bar.setValue(i + 1)
             
             self.aligner.cleanup_preview_folders()
@@ -235,4 +224,8 @@ class EndMenu(QDialog):
         )
         
         self.close()
-        QApplication.instance().quit()
+        self.export_complete.emit({
+            "total": self.aligner.total_images,
+            "output_folder": str(self._output_folder),
+            "orientation": orientation,
+        })
