@@ -21,7 +21,7 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -33,6 +33,9 @@ JSON_VERSION = "2.0"
 # they are documented in README.md and AGENTS.md.
 DEFAULT_MAX_ZOOM = 3.0  # slider default (range 1.0-6.0); cap = cover * this
 UPSCALE_CAP = 2.0       # max real upscale of the sharp subject before blur-fill
+THUMB_MAX = 512
+CACHE_DIR_NAME = ".fpa_cache"
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
 
 
 def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_h):
@@ -84,56 +87,37 @@ def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_
 
 
 def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
-    """Return (x, y, w, h) - the crop rectangle in ORIGINAL pixels.
+    """Return (x, y, w, h) crop rectangle in original pixels.
 
-    Bounded-zoom framing: fit the whole image to the frame (cover) as the
-    baseline, then allow zooming toward the focal point up to cover*max_zoom.
+    The focal point is centered in the output frame (clamped at the edges).
+    Large sources: take a 1:1 crop of the target size. Small sources: scale
+    up just enough to cover the frame. `max_zoom` is unused (kept for callers).
     """
-    focal_x = max(1, min(focal_x, orig_w - 1))
-    focal_y = max(1, min(focal_y, orig_h - 1))
-
-    half_tw = target_w / 2
-    half_th = target_h / 2
-
-    cover = max(target_w / orig_w, target_h / orig_h)
-
-    candidates = []
-    for d in (focal_x, orig_w - focal_x):
-        if d > 0:
-            candidates.append(half_tw / d)
-    for d in (focal_y, orig_h - focal_y):
-        if d > 0:
-            candidates.append(half_th / d)
-    focal_scale = max(candidates) if candidates else cover
-
-    scale = max(cover, focal_scale)
-    max_scale = max(cover, 1e-9) * max_zoom
-    scale = max(0, min(scale, max_scale))
-
-    w = max(1.0, target_w / scale)
-    h = max(1.0, target_h / scale)
-
-    x = focal_x - w / 2
-    y = focal_y - h / 2
-
-    x = min(max(x, 0.0), orig_w - w)
-    y = min(max(y, 0.0), orig_h - h)
-
+    del max_zoom
+    orig_w = float(orig_w)
+    orig_h = float(orig_h)
+    target_w = float(target_w)
+    target_h = float(target_h)
+    cover = max(target_w / orig_w, target_h / orig_h) if orig_w and orig_h else 1.0
+    scale = max(cover, 1.0)
+    w = min(orig_w, max(1.0, target_w / scale))
+    h = min(orig_h, max(1.0, target_h / scale))
+    fx = max(0.0, min(float(focal_x), orig_w))
+    fy = max(0.0, min(float(focal_y), orig_h))
+    x = min(max(fx - w / 2, 0.0), orig_w - w)
+    y = min(max(fy - h / 2, 0.0), orig_h - h)
     return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
 
 
 def render_aligned(img, focal, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
-    """Render one image to exactly (target_h, target_w), handling any source size.
+    """Render one image to exactly (target_h, target_w).
 
-    Returns (aligned, used_blur_fill). This function always performs cropping
-    and scaling to the target resolution; no blurred backdrop or filler is used.
+    Crops around the focal point, then scales to the target size. Small
+    sources are upscaled; large sources keep native pixels in the crop.
     """
     h, w = img.shape[:2]
     if focal is None:
         focal = (w / 2, h / 2)
-
-    cover = max(target_w / w, target_h / h)
-
     fx, fy = focal
     x, y, cw, ch = compute_crop(fx, fy, w, h, target_w, target_h, max_zoom)
     region = img[y:y + ch, x:x + cw]
@@ -152,25 +136,91 @@ def crop_to_widget(crop_x, crop_y, crop_w, crop_h, img_x, img_y, disp_w, disp_h,
     return (int(round(wx)), int(round(wy)), int(round(ww)), int(round(wh)))
 
 
+def _exif_orientation(img_path):
+    if not PIL_AVAILABLE:
+        return 1
+    try:
+        with Image.open(str(img_path)) as im:
+            return int(im.getexif().get(0x0112, 1) or 1)
+    except Exception:
+        return 1
+
+
+def _transpose_hw(img):
+    if img.ndim == 3:
+        return np.ascontiguousarray(np.transpose(img, (1, 0, 2)))
+    return np.ascontiguousarray(np.transpose(img, (1, 0)))
+
+
+def _apply_exif_orientation(img, orientation):
+    """Rotate/flip a BGR array so it matches browser (and PIL) display orientation."""
+    orientation = int(orientation or 1)
+    if orientation == 2:
+        return cv2.flip(img, 1)
+    if orientation == 3:
+        return cv2.rotate(img, cv2.ROTATE_180)
+    if orientation == 4:
+        return cv2.flip(img, 0)
+    if orientation == 5:
+        return _transpose_hw(img)
+    if orientation == 6:
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    if orientation == 7:
+        return cv2.flip(_transpose_hw(img), 1)
+    if orientation == 8:
+        return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return img
+
+
 def load_image_safely(img_path):
-    """Load an image using OpenCV, with PIL fallback for problematic formats."""
-    # Try OpenCV first
+    """Load an image using OpenCV, with PIL fallback. Honors EXIF orientation."""
+    orientation = _exif_orientation(img_path)
     img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
     if img is not None and img.size > 0:
-        return img, "opencv"
-    
-    # Fallback to PIL/Pillow for formats like WEBP that might cause issues
+        if img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        return _apply_exif_orientation(img, orientation), "opencv"
+
     if not PIL_AVAILABLE:
         return None, "failed"
-    
+
     try:
-        pil_img = Image.open(str(img_path))
-        if pil_img.mode != 'RGB':
-            pil_img = pil_img.convert('RGB')
-        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        return img, "pil"
+        with Image.open(str(img_path)) as pil_img:
+            oriented = ImageOps.exif_transpose(pil_img)
+            if oriented is not None:
+                pil_img = oriented
+            if pil_img.mode != "RGB":
+                pil_img = pil_img.convert("RGB")
+            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            return img, "pil"
     except Exception:
         return None, "failed"
+
+
+def probe_image_size(img_path):
+    """Return (width, height) from file headers without decoding pixels.
+
+    Uses EXIF orientation so the size matches what a browser displays.
+    Falls back to a full decode only if the header probe fails.
+    """
+    if PIL_AVAILABLE:
+        try:
+            with Image.open(str(img_path)) as im:
+                w, h = im.size
+                orientation = int(im.getexif().get(0x0112, 1) or 1)
+                if orientation in (5, 6, 7, 8):
+                    w, h = h, w
+                if w > 0 and h > 0:
+                    return (w, h)
+        except Exception:
+            pass
+    img, _ = load_image_safely(img_path)
+    if img is None or img.size == 0:
+        return None
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return None
+    return (w, h)
 
 
 class FocalPointAlignerCore:
@@ -202,12 +252,12 @@ class FocalPointAlignerCore:
         self.target_height = config.get('target_height', 1440)
         self.max_zoom = config.get('max_zoom', DEFAULT_MAX_ZOOM)
         
-        self.preview_landscape_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_landscape"
-        self.preview_portrait_folder = self.input_folder.parent / f"{self.input_folder.name}_preview_portrait"
-        
-        # Create preview folders at initialization
-        self.preview_landscape_folder.mkdir(parents=True, exist_ok=True)
-        self.preview_portrait_folder.mkdir(parents=True, exist_ok=True)
+        self.cache_root = self.input_folder / CACHE_DIR_NAME
+        self.thumb_folder = self.cache_root / "thumbs"
+        self.preview_cache_folder = self.cache_root / "previews"
+        # Legacy sibling preview folders (kept as aliases; new writes go to cache).
+        self.preview_landscape_folder = self.preview_cache_folder
+        self.preview_portrait_folder = self.preview_cache_folder
         
         self.json_path = self.output_folder / "focal_points.json"
         
@@ -228,13 +278,14 @@ class FocalPointAlignerCore:
             except:
                 pass
         
-        extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+        extensions = IMAGE_EXTENSIONS
         self.image_files = sorted([
             f for f in self.input_folder.iterdir()
             if f.is_file() and f.suffix.lower() in extensions
         ])
         
         self.invalid_images = set()
+        self.image_dimensions = {}
         self._validate_and_discard_images()
         
         if not self.image_files:
@@ -243,7 +294,6 @@ class FocalPointAlignerCore:
         self.current_idx = 0
         self.focal_points = {}
         self.completed = set()
-        self.image_dimensions = {}
         self.auto_center_flags = {}
         
         self.preview_dirty = set()
@@ -252,21 +302,12 @@ class FocalPointAlignerCore:
         
         self.load_focal_points()
         
-        self._migrate_preview_naming()
-        
         if self.image_files:
-            for idx in range(len(self.image_files)):
-                landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
-                portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
-                if not landscape_file.exists() or not portrait_file.exists():
+            for idx, img_file in enumerate(self.image_files):
+                if not self.preview_path(img_file, "landscape").exists():
                     self.preview_dirty.add(idx)
-        
-        if self.image_files:
-            sample_img = cv2.imread(str(self.image_files[0]))
-            if sample_img is not None:
-                self.ref_h, self.ref_w = sample_img.shape[:2]
-            else:
-                self.ref_h, self.ref_w = 1440, 2560
+            w, h = self.image_dimensions.get(0, (2560, 1440))
+            self.ref_w, self.ref_h = w, h
         else:
             self.ref_h, self.ref_w = 1440, 2560
     
@@ -395,10 +436,9 @@ class FocalPointAlignerCore:
         logger.info(f"[ALIGNER _reorder_files_by_names] Reordered to {[f.name[:20] for f in ordered[:5]]}...")
     
     def _validate_and_discard_images(self):
-        """Validate all images and discard invalid ones.
-        
-        Moves invalid images to discarded/invalid/ subfolder.
-        Adjusts image_files list and index tracking.
+        """Validate images via header probe; move undecodable files aside.
+
+        Stores original (width, height) in image_dimensions without a full decode.
         """
         if not self.image_files:
             return
@@ -406,26 +446,13 @@ class FocalPointAlignerCore:
         invalid_indices = []
         
         for idx, img_file in enumerate(self.image_files):
-            img, load_method = load_image_safely(img_file)
-            
-            if img is None:
-                logger.warning(f"[VALIDATE] Invalid image (cannot load): {img_file.name}")
+            size = probe_image_size(img_file)
+            if size is None:
+                logger.warning(f"[VALIDATE] Invalid image (cannot probe): {img_file.name}")
                 invalid_indices.append(idx)
                 self.invalid_images.add(img_file.name)
                 continue
-            
-            if img.size == 0:
-                logger.warning(f"[VALIDATE] Invalid image (zero size): {img_file.name}")
-                invalid_indices.append(idx)
-                self.invalid_images.add(img_file.name)
-                continue
-            
-            h, w = img.shape[:2]
-            if h <= 0 or w <= 0:
-                logger.warning(f"[VALIDATE] Invalid image (invalid dimensions {w}x{h}): {img_file.name}")
-                invalid_indices.append(idx)
-                self.invalid_images.add(img_file.name)
-                continue
+            self.image_dimensions[idx] = size
         
         if not invalid_indices:
             logger.info(f"[VALIDATE] All {len(self.image_files)} images are valid")
@@ -439,12 +466,22 @@ class FocalPointAlignerCore:
         for idx in reversed(invalid_indices):
             img_file = self.image_files[idx]
             dest = invalid_folder / img_file.name
-            
             if img_file.exists():
                 shutil.move(str(img_file), str(dest))
                 logger.info(f"[VALIDATE] Moved invalid image to: {dest}")
         
-        self.image_files = [f for i, f in enumerate(self.image_files) if i not in invalid_indices]
+        valid = []
+        new_dims = {}
+        new_i = 0
+        for i, f in enumerate(self.image_files):
+            if i in invalid_indices:
+                continue
+            valid.append(f)
+            if i in self.image_dimensions:
+                new_dims[new_i] = self.image_dimensions[i]
+            new_i += 1
+        self.image_files = valid
+        self.image_dimensions = new_dims
         
         logger.info(f"[VALIDATE] After validation: {len(self.image_files)} valid images remain")
     
@@ -502,6 +539,132 @@ class FocalPointAlignerCore:
                 self.json_path.unlink()
             except Exception as e:
                 logger.warning(f"Warning: Could not delete focal points file: {e}")
+
+    def _ensure_dims(self, idx):
+        """Return (w, h) for idx, probing the file header if unknown."""
+        dims = self.image_dimensions.get(idx)
+        if dims and dims[0] > 0 and dims[1] > 0:
+            return dims
+        if 0 <= idx < len(self.image_files):
+            size = probe_image_size(self.image_files[idx])
+            if size:
+                self.image_dimensions[idx] = size
+                return size
+        return None
+
+    def thumb_path(self, img_file):
+        return self.thumb_folder / f"{Path(img_file).stem}.jpg"
+
+    def preview_path(self, img_file, orientation="landscape"):
+        return self.preview_cache_folder / f"{Path(img_file).stem}_{orientation}.jpg"
+
+    def ensure_thumbnail(self, idx):
+        """Write a ~512px JPEG thumb for idx if missing. Returns path or None."""
+        if not (0 <= idx < len(self.image_files)):
+            return None
+        img_file = self.image_files[idx]
+        path = self.thumb_path(img_file)
+        if path.exists():
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if PIL_AVAILABLE:
+            try:
+                with Image.open(str(img_file)) as im:
+                    oriented = ImageOps.exif_transpose(im)
+                    if oriented is not None:
+                        im = oriented
+                    im = im.convert("RGB")
+                    im.thumbnail((THUMB_MAX, THUMB_MAX), Image.Resampling.LANCZOS)
+                    im.save(str(path), "JPEG", quality=75, optimize=True)
+                return path
+            except Exception as e:
+                logger.warning(f"[THUMB] PIL failed for {img_file.name}: {e}")
+        img, _ = load_image_safely(img_file)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        scale = min(THUMB_MAX / max(w, 1), THUMB_MAX / max(h, 1), 1.0)
+        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+        small = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+        cv2.imwrite(str(path), small, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        return path
+
+    def ensure_thumbnails(self, progress_callback=None):
+        """Generate missing thumbs for every image (sequential, cheap)."""
+        total = len(self.image_files)
+        for idx in range(total):
+            self.ensure_thumbnail(idx)
+            if progress_callback:
+                progress_callback(idx + 1, total, self.image_files[idx].name)
+
+    def session_snapshot(self):
+        """JSON-serializable session state for the web API."""
+        images = []
+        for i, f in enumerate(self.image_files):
+            w, h = self.image_dimensions.get(i, (0, 0))
+            focal = self.focal_points.get(i)
+            images.append({
+                "id": i,
+                "filename": f.name,
+                "path": str(f.resolve()),
+                "width": w,
+                "height": h,
+                "focal": [focal[0], focal[1]] if focal else None,
+                "completed": i in self.completed,
+                "auto_center": bool(self.auto_center_flags.get(i, False)),
+                "focal_at_center": self.is_focal_at_center_idx(i),
+            })
+        return {
+            "images": images,
+            "current_idx": self.current_idx,
+            "target_width": self.target_width,
+            "target_height": self.target_height,
+            "max_zoom": self.max_zoom,
+            "alignment_mode": self.alignment_mode or "landscape",
+            "input_folder": str(self.input_folder.resolve()),
+            "output_folder": str(self.output_folder.resolve()),
+            "stats": self.get_stats(),
+            "total": self.total_images,
+            "completed_count": self.completed_count,
+        }
+
+    def crop_for(self, idx, orientation=None):
+        """Return compute_crop rect for an image index, or None."""
+        dims = self._ensure_dims(idx)
+        if not dims:
+            return None
+        w, h = dims
+        focal = self.focal_points.get(idx) or (w / 2, h / 2)
+        orientation = orientation or self.alignment_mode or "landscape"
+        if orientation == "portrait":
+            tw, th = self.target_height, self.target_width
+        else:
+            tw, th = self.target_width, self.target_height
+        x, y, cw, ch = compute_crop(
+            focal[0], focal[1], w, h, tw, th, self.max_zoom
+        )
+        return {"x": x, "y": y, "w": cw, "h": ch, "orig_w": w, "orig_h": h,
+                "target_w": tw, "target_h": th, "focal": [focal[0], focal[1]]}
+
+    def export_aligned(self, output_folder, orientation="landscape", progress_callback=None):
+        """Write aligned JPEGs to output_folder as {idx:04d}.jpg. GUI export path."""
+        output_folder = Path(output_folder)
+        output_folder.mkdir(parents=True, exist_ok=True)
+        self.set_alignment_mode(orientation)
+        total = len(self.image_files)
+        exported = 0
+        for i, img_file in enumerate(self.image_files):
+            focal = self.focal_points.get(i)
+            if focal is not None:
+                ok = self.align_single_image(
+                    i, img_file, focal, output_folder, orientation,
+                    output_name=f"{i:04d}.jpg",
+                )
+                if ok:
+                    exported += 1
+            if progress_callback:
+                progress_callback(i + 1, total, img_file.name)
+        return exported
     
     def get_current_image(self):
         """Load and return the current original image."""
@@ -550,13 +713,10 @@ class FocalPointAlignerCore:
         return None
     
     def get_preview_image(self, orientation="landscape"):
-        """Load preview image for current index."""
-        folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
-        if folder is None:
-            logger.warning(f"[get_preview_image] folder is None, orientation={orientation}")
+        """Load preview image for current index (filename-keyed cache)."""
+        if not (0 <= self.current_idx < len(self.image_files)):
             return None
-        filename = f"{self.current_idx:04d}.jpg"
-        preview_path = folder / filename
+        preview_path = self.preview_path(self.image_files[self.current_idx], orientation)
         logger.info(f"[get_preview_image] Looking for: {preview_path}, exists={preview_path.exists()}")
         if preview_path.exists():
             return cv2.imread(str(preview_path))
@@ -564,12 +724,7 @@ class FocalPointAlignerCore:
     
     def set_focal_point(self, x, y, auto_center=False):
         """Set focal point for current image (in original image coordinates)."""
-        h, w = self.image_dimensions.get(self.current_idx, (0, 0))
-        if h == 0 or w == 0:
-            img = cv2.imread(str(self.image_files[self.current_idx]))
-            if img is not None:
-                h, w = img.shape[:2]
-                self.image_dimensions[self.current_idx] = (w, h)
+        self._ensure_dims(self.current_idx)
         
         self.focal_points[self.current_idx] = (float(x), float(y))
         self.auto_center_flags[self.current_idx] = auto_center
@@ -579,9 +734,10 @@ class FocalPointAlignerCore:
             self.preview_dirty.add(self.current_idx)
         
         focal = (float(x), float(y))
+        orientation = self.alignment_mode or "landscape"
         thread = threading.Thread(
             target=self._generate_previews_for_image,
-            args=(self.current_idx, focal)
+            args=(self.current_idx, focal, orientation)
         )
         thread.daemon = True
         thread.start()
@@ -596,12 +752,15 @@ class FocalPointAlignerCore:
             self.completed.remove(self.current_idx)
         self.save_focal_points()
     
-    def _generate_previews_for_image(self, idx, focal):
-        """Background preview generation for a single image."""
-        self.align_single_image(idx, self.image_files[idx], focal,
-                               self.preview_landscape_folder, "landscape")
-        self.align_single_image(idx, self.image_files[idx], focal,
-                               self.preview_portrait_folder, "portrait")
+    def _generate_previews_for_image(self, idx, focal, orientation=None):
+        """Background preview generation for a single image (current orientation only)."""
+        orientation = orientation or self.alignment_mode or "landscape"
+        if not (0 <= idx < len(self.image_files)):
+            return
+        self.align_single_image(
+            idx, self.image_files[idx], focal, self.preview_cache_folder, orientation,
+            output_name=self.preview_path(self.image_files[idx], orientation).name,
+        )
         with self._preview_generation_lock:
             self.preview_dirty.discard(idx)
         self.save_focal_points()
@@ -609,18 +768,17 @@ class FocalPointAlignerCore:
     def get_preview_generation_status(self):
         """Returns (total, dirty_or_missing_count)."""
         total = len(self.image_files)
+        orientation = self.alignment_mode or "landscape"
         
         with self._preview_generation_lock:
             dirty = set(self.preview_dirty)
         
         missing = 0
-        for idx in range(total):
-            landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
-            portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
-            if not landscape_file.exists() or not portrait_file.exists():
+        for idx, img_file in enumerate(self.image_files):
+            if not self.preview_path(img_file, orientation).exists():
                 missing += 1
         
-        need_count = len(dirty) + missing
+        need_count = len(dirty | {i for i in range(total) if not self.preview_path(self.image_files[i], orientation).exists()})
         logger.info(f"[PREVIEW_STATUS] total={total}, dirty={len(dirty)}, missing={missing}, need_count={need_count}")
         return (total, need_count)
     
@@ -643,11 +801,11 @@ class FocalPointAlignerCore:
             for idx in range(total):
                 img_name = self.image_files[idx].name if idx < len(self.image_files) else "?"
                 
-                # Skip if preview files already exist
-                landscape_file = self.preview_landscape_folder / f"{idx:04d}.jpg"
-                portrait_file = self.preview_portrait_folder / f"{idx:04d}.jpg"
-                if landscape_file.exists() and portrait_file.exists():
-                    logger.info(f"[PREVIEW] [{idx+1}/{total}] {img_name}: Skipping - previews exist")
+                # Skip if preview file already exists
+                orientation = self.alignment_mode or "landscape"
+                dest = self.preview_path(self.image_files[idx], orientation)
+                if dest.exists() and idx not in self.preview_dirty:
+                    logger.info(f"[PREVIEW] [{idx+1}/{total}] {img_name}: Skipping - preview exists")
                     processed += 1
                     if progress_callback:
                         progress_callback(processed, total, img_name)
@@ -705,32 +863,18 @@ class FocalPointAlignerCore:
                 
                 consecutive_failures = 0
                 
-                logger.info(f"[PREVIEW] {img_name}: Aligning landscape...")
+                orientation = self.alignment_mode or "landscape"
+                dest = self.preview_path(self.image_files[idx], orientation)
+                logger.info(f"[PREVIEW] {img_name}: Aligning {orientation}...")
                 try:
-                    success = self._align_single_image_threaded(
+                    success = self.align_single_image(
                         idx, self.image_files[idx], focal,
-                        self.preview_landscape_folder, "landscape", timeout=30)
+                        self.preview_cache_folder, orientation,
+                        output_name=dest.name)
                     if not success:
-                        logger.info(f"[PREVIEW] {img_name}: Landscape skipped due to timeout/error")
+                        logger.info(f"[PREVIEW] {img_name}: {orientation} skipped due to error")
                 except Exception as e:
-                    logger.warning(f"[PREVIEW] {img_name}: Landscape error: {e}")
-                
-                logger.info(f"[PREVIEW] {img_name}: Checking cancel after landscape...")
-                if self._cancel_preview_generation:
-                    logger.info(f"[PREVIEW] {img_name}: cancelled after landscape, skipping portrait")
-                    with self._preview_generation_lock:
-                        self.preview_dirty.discard(idx)
-                    continue
-                
-                logger.info(f"[PREVIEW] {img_name}: Aligning portrait...")
-                try:
-                    success = self._align_single_image_threaded(
-                        idx, self.image_files[idx], focal,
-                        self.preview_portrait_folder, "portrait", timeout=30)
-                    if not success:
-                        logger.info(f"[PREVIEW] {img_name}: Portrait skipped due to timeout/error")
-                except Exception as e:
-                    logger.warning(f"[PREVIEW] {img_name}: Portrait error: {e}")
+                    logger.warning(f"[PREVIEW] {img_name}: {orientation} error: {e}")
                 
                 logger.info(f"[PREVIEW] {img_name}: Marking complete...")
                 with self._preview_generation_lock:
@@ -760,34 +904,29 @@ class FocalPointAlignerCore:
         self._cancel_preview_generation = True
     
     def confirm_and_save(self):
-        """Save current focal point and generate aligned images."""
+        """Save current focal point (JSON only) and advance. No full-res write."""
         if self.current_idx not in self.focal_points:
-            img = self.get_current_image()
-            if img is not None:
-                h, w = img.shape[:2]
+            dims = self._ensure_dims(self.current_idx)
+            if dims:
+                w, h = dims
                 self.focal_points[self.current_idx] = (w / 2, h / 2)
-                self.image_dimensions[self.current_idx] = (w, h)
                 self.auto_center_flags[self.current_idx] = True
             else:
                 return False
         
-        if self.current_idx not in self.image_dimensions:
-            img = self.get_current_image()
-            if img is not None:
-                h, w = img.shape[:2]
-                self.image_dimensions[self.current_idx] = (w, h)
+        self._ensure_dims(self.current_idx)
         
         if self.current_idx not in self.completed:
             self.completed.add(self.current_idx)
         
-        self.save_aligned_image()
-        
+        orientation = self.alignment_mode or "landscape"
         focal = self.focal_points[self.current_idx]
-        
-        self.align_single_image(self.current_idx, self.image_files[self.current_idx], 
-                               focal, self.preview_landscape_folder, "landscape")
-        self.align_single_image(self.current_idx, self.image_files[self.current_idx], 
-                               focal, self.preview_portrait_folder, "portrait")
+        thread = threading.Thread(
+            target=self._generate_previews_for_image,
+            args=(self.current_idx, focal, orientation),
+        )
+        thread.daemon = True
+        thread.start()
         
         self.save_focal_points()
         
@@ -816,7 +955,7 @@ class FocalPointAlignerCore:
         output_path = self.output_folder / output_name
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 95])
     
-    def align_single_image(self, idx, img_file, focal, output_folder, orientation):
+    def align_single_image(self, idx, img_file, focal, output_folder, orientation, output_name=None):
         """Align a single image with given focal point to specified orientation.
         
         Returns True if successful, False otherwise.
@@ -829,28 +968,31 @@ class FocalPointAlignerCore:
             target_w = self.target_width
             target_h = self.target_height
         
+        if output_name is None:
+            output_name = f"{idx:04d}.jpg"
+        
         try:
             img, load_method = load_image_safely(img_file)
             if img is None:
-                # Create placeholder so numbering stays sequential
                 logger.warning(f"[align_single_image] Failed to load {img_file.name}, creating placeholder")
                 output_folder.mkdir(parents=True, exist_ok=True)
-                output_name = f"{idx:04d}.jpg"
-                output_path = output_folder / output_name
+                output_path = Path(output_folder) / output_name
                 placeholder = np.full((target_h, target_w, 3), 128, dtype=np.uint8)
                 cv2.imwrite(str(output_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 return True
             
             h, w = img.shape[:2]
+            self.image_dimensions[idx] = (w, h)
             if focal is None:
                 focal = (w / 2, h / 2)
             
             aligned, _ = render_aligned(
-                img, focal, target_w, target_h, max_zoom=self.max_zoom
+                img, focal, target_w, target_h,
+                max_zoom=self.max_zoom,
             )
             
+            output_folder = Path(output_folder)
             output_folder.mkdir(parents=True, exist_ok=True)
-            output_name = f"{idx:04d}.jpg"
             output_path = output_folder / output_name
             cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 90])
             return True
@@ -889,53 +1031,54 @@ class FocalPointAlignerCore:
         return result['success']
     
     def prepare_aligned_previews(self, orientation="landscape"):
-        """Pre-generate all preview images for the given orientation."""
-        folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
-        folder.mkdir(parents=True, exist_ok=True)
-        
-        existing_count = len(list(folder.glob("*.jpg")))
-        if existing_count == len(self.image_files):
-            return
-        
-        for f in folder.glob("*.jpg"):
-            f.unlink()
+        """Pre-generate all preview images for the given orientation (filename-keyed)."""
+        self.preview_cache_folder.mkdir(parents=True, exist_ok=True)
+        self.set_alignment_mode(orientation)
         
         for idx, img_file in enumerate(self.image_files):
+            dest = self.preview_path(img_file, orientation)
+            if dest.exists() and idx not in self.preview_dirty:
+                continue
             current_focal = self.focal_points.get(idx)
             if current_focal is None:
-                img, load_method = load_image_safely(img_file)
-                if img is not None:
-                    h, w = img.shape[:2]
+                dims = self._ensure_dims(idx)
+                if dims:
+                    w, h = dims
                     current_focal = (w / 2, h / 2)
                     self.focal_points[idx] = current_focal
                     self.auto_center_flags[idx] = True
             
             if current_focal is not None:
-                self.align_single_image(idx, img_file, current_focal, folder, orientation)
+                self.align_single_image(
+                    idx, img_file, current_focal, self.preview_cache_folder, orientation,
+                    output_name=dest.name,
+                )
+                self.preview_dirty.discard(idx)
         
         self.save_focal_points()
     
     def ensure_preview_for_current(self, orientation="landscape"):
         """Ensure preview exists for current image, generating if needed."""
-        folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
-        filename = f"{self.current_idx:04d}.jpg"
-        preview_path = folder / filename
+        if not (0 <= self.current_idx < len(self.image_files)):
+            return False
+        preview_path = self.preview_path(self.image_files[self.current_idx], orientation)
         
         with self._preview_generation_lock:
             is_dirty = self.current_idx in self.preview_dirty
         
-        logger.info(f"[ensure_preview] idx={self.current_idx}, file={filename}, exists={preview_path.exists()}, is_dirty={is_dirty}")
+        logger.info(f"[ensure_preview] idx={self.current_idx}, file={preview_path.name}, exists={preview_path.exists()}, is_dirty={is_dirty}")
         
         if preview_path.exists() and not is_dirty:
             return True
         
         current_focal = self.focal_points.get(self.current_idx)
-        img = self.get_current_image()
-        if img is not None:
-            h, w = img.shape[:2]
-            current_focal = (w / 2, h / 2)
-            self.focal_points[self.current_idx] = current_focal
-            self.auto_center_flags[self.current_idx] = True
+        if current_focal is None:
+            dims = self._ensure_dims(self.current_idx)
+            if dims:
+                w, h = dims
+                current_focal = (w / 2, h / 2)
+                self.focal_points[self.current_idx] = current_focal
+                self.auto_center_flags[self.current_idx] = True
         
         if current_focal is not None:
             logger.info(f"[ensure_preview] Generating preview for idx={self.current_idx}")
@@ -943,22 +1086,13 @@ class FocalPointAlignerCore:
                 self.current_idx,
                 self.image_files[self.current_idx],
                 current_focal,
-                folder,
-                orientation
+                self.preview_cache_folder,
+                orientation,
+                output_name=preview_path.name,
             )
             with self._preview_generation_lock:
                 self.preview_dirty.discard(self.current_idx)
-            self.save_focal_points()
             return success
-        elif not preview_path.exists():
-            # Image failed to load - create placeholder so numbering stays sequential
-            logger.warning(f"[ensure_preview] Image failed, creating placeholder for idx={self.current_idx}")
-            placeholder = np.zeros((540, 960, 3), dtype=np.uint8)
-            placeholder[:, :] = (128, 128, 128)  # Gray placeholder
-            cv2.imwrite(str(preview_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            with self._preview_generation_lock:
-                self.preview_dirty.discard(self.current_idx)
-            return True
         return False
     
     def navigate(self, direction):
@@ -1054,12 +1188,6 @@ class FocalPointAlignerCore:
         old_current = self.current_idx
         self.current_idx = old_to_new.get(old_current, old_current)
         
-        self.preview_dirty = set(range(len(self.image_files)))
-        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
-            if folder and folder.exists():
-                for f in folder.glob("*.jpg"):
-                    f.unlink()
-        
         self.save_focal_points()
         return True
 
@@ -1090,122 +1218,58 @@ class FocalPointAlignerCore:
         self.save_focal_points()
     
     def discard_current(self):
-        """Move current image to discarded folder."""
+        """Move current image to discarded folder, preserving arrange order."""
+        if not (0 <= self.current_idx < len(self.image_files)):
+            return
         current_file = self.image_files[self.current_idx]
         discarded_idx = self.current_idx
+        stem = current_file.stem
         logger.info(f"[ALIGNER discard_current] START: current_idx={self.current_idx}, total_images={len(self.image_files)}, file={current_file.name}")
         
-        # 1. Move original image to discarded folder
         discard_folder = self.input_folder / "discarded"
         discard_folder.mkdir(exist_ok=True)
-        
         dest = discard_folder / current_file.name
         shutil.move(str(current_file), str(dest))
-        
         self.discarded.add(current_file.name)
         
-        # 2. Delete focal point data for current index
-        if self.current_idx in self.focal_points:
-            del self.focal_points[self.current_idx]
-            self.completed.discard(self.current_idx)
-        if self.current_idx in self.auto_center_flags:
-            del self.auto_center_flags[self.current_idx]
+        for path in (
+            self.thumb_path(current_file),
+            self.preview_path(current_file, "landscape"),
+            self.preview_path(current_file, "portrait"),
+        ):
+            if path.exists():
+                path.unlink()
         
-        # 3. Shift all in-memory state (focal_points, completed, auto_center_flags) BEFORE file operations
-        new_focal_points = {}
-        new_completed = set()
-        new_auto_center = {}
-        for idx in list(self.focal_points.keys()):
-            if idx < discarded_idx:
-                new_focal_points[idx] = self.focal_points[idx]
-                if idx in self.completed:
-                    new_completed.add(idx)
-            elif idx > discarded_idx:
-                new_focal_points[idx - 1] = self.focal_points[idx]
-                if idx in self.completed:
-                    new_completed.add(idx - 1)
-        for idx in list(self.auto_center_flags.keys()):
-            if idx < discarded_idx:
-                new_auto_center[idx] = self.auto_center_flags[idx]
-            elif idx > discarded_idx:
-                new_auto_center[idx - 1] = self.auto_center_flags[idx]
+        def _shift_dict(d):
+            out = {}
+            for idx, val in d.items():
+                if idx < discarded_idx:
+                    out[idx] = val
+                elif idx > discarded_idx:
+                    out[idx - 1] = val
+            return out
         
-        logger.info(f"[ALIGNER discard_current] Shifting focal_points: {list(self.focal_points.keys())} -> {list(new_focal_points.keys())}")
-        self.focal_points = new_focal_points
-        self.completed = new_completed
-        self.auto_center_flags = new_auto_center
+        def _shift_set(s):
+            out = set()
+            for idx in s:
+                if idx < discarded_idx:
+                    out.add(idx)
+                elif idx > discarded_idx:
+                    out.add(idx - 1)
+            return out
         
-        # 4. Shift preview_dirty indices
-        new_dirty = set()
-        for idx in self.preview_dirty:
-            if idx < discarded_idx:
-                new_dirty.add(idx)
-            elif idx > discarded_idx:
-                new_dirty.add(idx - 1)
-        # Mark current position as dirty so preview regenerates when viewed
-        new_dirty.add(self.current_idx)
-        logger.info(f"[ALIGNER discard_current] Shifting preview_dirty: {self.preview_dirty} -> {new_dirty}")
-        self.preview_dirty = new_dirty
+        self.focal_points = _shift_dict(self.focal_points)
+        self.auto_center_flags = _shift_dict(self.auto_center_flags)
+        self.image_dimensions = _shift_dict(self.image_dimensions)
+        self.completed = _shift_set(self.completed)
+        self.preview_dirty = _shift_set(self.preview_dirty)
         
-        # 5. Handle preview files on disk - delete at discarded_idx, rename all above
-        for orientation in ["landscape", "portrait"]:
-            folder = self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
-            if not folder or not folder.exists():
-                continue
-            
-            # Clean up any stray temp files from previous operations
-            for f in folder.glob("__temp_*.jpg"):
-                logger.warning(f"[ALIGNER discard_current] Deleting stray temp file: {f.name}")
-                f.unlink()
-            
-            # Delete the preview at discarded index
-            preview_to_delete = folder / f"{discarded_idx:04d}.jpg"
-            if preview_to_delete.exists():
-                logger.info(f"[ALIGNER discard_current] Deleting preview {orientation}: {preview_to_delete.name}")
-                preview_to_delete.unlink()
-            
-            # Rename all preview files with index > discarded_idx down by 1
-            # CRITICAL: Use two-pass (temp names) to prevent overwriting
-            previews = sorted(folder.glob("*.jpg"), key=lambda x: int(x.stem))
-            
-            # First pass: rename to temp names
-            temp_files = {}
-            for f in previews:
-                try:
-                    idx = int(f.stem)
-                    if idx > discarded_idx:
-                        temp_name = f"__temp_{idx:04d}.jpg"
-                        temp_path = folder / temp_name
-                        logger.info(f"[ALIGNER discard_current] {orientation}: {f.name} -> {temp_name}")
-                        f.rename(temp_path)
-                        temp_files[idx] = temp_path
-                except ValueError:
-                    pass
-            
-            # Second pass: rename from temp names to final names
-            for idx, temp_path in sorted(temp_files.items()):
-                final_name = f"{idx - 1:04d}.jpg"
-                final_path = folder / final_name
-                logger.info(f"[ALIGNER discard_current] {orientation}: {temp_path.name} -> {final_name}")
-                temp_path.rename(final_path)
+        self.image_files.pop(discarded_idx)
         
-        # 6. Re-scan image files
-        extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
-        self.image_files = sorted([
-            f for f in self.input_folder.iterdir()
-            if f.is_file() and f.suffix.lower() in extensions
-        ])
-        
-        logger.info(f"[ALIGNER discard_current] After re-scan: len(image_files)={len(self.image_files)}")
-        
-        # 7. Adjust current index if needed
         if self.current_idx >= len(self.image_files):
-            logger.info(f"[ALIGNER discard_current] Adjusting current_idx from {self.current_idx} to {max(0, len(self.image_files) - 1)}")
             self.current_idx = max(0, len(self.image_files) - 1)
         
-        # 8. Save JSON state
         self.save_focal_points()
-        
         logger.info(f"[ALIGNER discard_current] DONE: current_idx={self.current_idx}, total_images={len(self.image_files)}")
     
     def apply_arrange_order(self, display_order):
@@ -1234,26 +1298,16 @@ class FocalPointAlignerCore:
         
         old_order = [i for i in range(len(self.image_files))]
         if display_order != old_order:
+            old_to_new = {orig_idx: new_pos for new_pos, orig_idx in enumerate(display_order)}
             self.image_files = new_files
             self.focal_points = new_focal
             self.completed = new_completed
             self.auto_center_flags = new_auto_center
             self.image_dimensions = new_dimensions
-            
-            self.preview_dirty = set(range(len(self.image_files)))
-            for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
-                if folder and folder.exists():
-                    for f in folder.glob("*.jpg"):
-                        f.unlink()
-                    logger.info(f"[ALIGNER apply_arrange_order] Cleared previews in {folder}")
-            
-            if self.current_idx in self.focal_points:
-                pass
-            elif self.current_idx < len(self.image_files):
-                img = self.get_current_image()
-                if img is not None:
-                    h, w = img.shape[:2]
-                    self.focal_points[self.current_idx] = (w/2, h/2)
+            self.current_idx = old_to_new.get(self.current_idx, 0)
+            self.preview_dirty = {
+                old_to_new[idx] for idx in self.preview_dirty if idx in old_to_new
+            }
             
             logger.info(f"[ALIGNER apply_arrange_order] DONE, new order: {[f.name[:20] for f in self.image_files[:5]]}")
             return True
@@ -1345,19 +1399,16 @@ class FocalPointAlignerCore:
         if self.json_path.exists():
             self.json_path.unlink()
         
-        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
-            if folder and folder.exists():
-                shutil.rmtree(folder)
+        self.cleanup_preview_folders()
         
         self.current_idx = 0
         self.alignment_mode = None
         self.save_focal_points()
     
     def cleanup_preview_folders(self):
-        """Remove preview folders after export."""
-        for folder in [self.preview_landscape_folder, self.preview_portrait_folder]:
-            if folder and folder.exists():
-                shutil.rmtree(folder)
+        """Remove cache/preview folders after export."""
+        if self.cache_root.exists():
+            shutil.rmtree(self.cache_root)
     
     def _migrate_preview_naming(self):
         """Migrate from 1-based to 0-based preview naming."""
@@ -1416,25 +1467,18 @@ class FocalPointAlignerCore:
         logger.info(f"[ALIGNER _renumber_previews] DONE")
     
     def get_preview_folder(self, orientation="landscape"):
-        """Get the preview folder for the given orientation."""
-        return self.preview_landscape_folder if orientation == "landscape" else self.preview_portrait_folder
+        """Get the preview cache folder (filename-keyed files live here)."""
+        return self.preview_cache_folder
     
     def is_preview_ready(self, orientation="landscape"):
-        """Check if preview folder has all images generated."""
-        folder = self.get_preview_folder(orientation)
-        if not folder or not folder.exists():
+        """Check if preview files exist for every image."""
+        if not self.image_files:
             return False
-        
-        expected_count = len(self.image_files)
-        existing_count = len(list(folder.glob("*.jpg")))
-        return existing_count == expected_count
+        return all(self.preview_path(f, orientation).exists() for f in self.image_files)
     
     def get_preview_image_count(self, orientation="landscape"):
-        """Get count of existing preview images."""
-        folder = self.get_preview_folder(orientation)
-        if not folder or not folder.exists():
-            return 0
-        return len(list(folder.glob("*.jpg")))
+        """Get count of existing preview images for orientation."""
+        return sum(1 for f in self.image_files if self.preview_path(f, orientation).exists())
     
     def set_alignment_mode(self, mode):
         """Set the alignment mode (landscape/portrait/None for original)."""

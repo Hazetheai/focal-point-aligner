@@ -9,5 +9,11 @@ test_images/
 test_images_aligned/
 test_images_aligned_preview_landscape/
 test_images_aligned_preview_portrait/
-*.DS_Storebuild/
+.DS_Store
+build/
 dist/
+node_modules/
+web/dist/
+src-tauri/target/
+src-tauri/gen/
+.fpa_cache/

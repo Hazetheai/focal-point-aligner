@@ -4,145 +4,133 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 
 ## What this project is
 
-**Focal Point Aligner** — a PyQt6 desktop app that aligns a batch of images around a focal point. Workflow:
+**Focal Point Aligner** — click a focal point on each photo in a folder; export aligned JPEGs at a shared target size with that point centered.
 
-1. Pick an input folder (drag-and-drop or Browse) → set target dimensions → **Start**.
-2. Set a focal point on each image (click), then **Save** to advance; discard bad images (`X`).
-3. **Arrange** tab: drag-and-drop thumbnails to choose the final order.
-4. Press **F** → **Export** writes aligned images to the output folder.
-5. After export (or after quitting a batch with **Escape**), the app **returns to the opener screen** so you can immediately process another folder. Close the opener window to quit.
+Current GUI: **React (Vite) + FastAPI**, optional Tauri shell. PyQt6 in `main.py` / `ui/` is **legacy**.
 
-## Stack & setup
+Workflow:
 
-- Python 3.x, PyQt6, opencv-python (cv2), numpy, pillow. See `requirements.txt`.
-- No system Python on this machine has the deps installed. Create a venv to run the app/tests:
-  ```bash
-  python3 -m venv venv
-  ./venv/bin/pip install -r requirements.txt pytest
-  ./venv/bin/python main.py
-  ```
-- GUI tests need a headless Qt platform:
-  ```bash
-  QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v
-  ```
-- **Do not read `pyqt_aligner.log` wholesale** — it grows to tens of MB. It is gitignored and safe to delete.
+1. Opener: pick input folder → target width/height → **Start** (or Batch on a root of subfolders).
+2. **Original**: click focal point; Enter / double-click saves and advances; **X** discards.
+3. **Preview**: aligned crop of the **same** `current_idx` as Original / Arrange.
+4. **Arrange**: drag thumbnails to set export order. Selection follows the file, not the old slot.
+5. **F** / Export writes `{idx:04d}.jpg` to the output folder.
+6. **Esc** (or Done) returns to the opener; in batch mode it opens the next pending folder.
+
+## One command for the GUI
+
+```bash
+npm run dev
+```
+
+(`./dev.sh` is the same.) Creates `./venv` if needed, installs Python + `web/` deps, starts FastAPI on **8765**, Vite on **5173**, opens the browser. Requires Node.js and Python 3. Do not tell people to run `main.py` unless they explicitly want the old PyQt app.
+
+## Stack & tests
+
+- Python 3.x, FastAPI, uvicorn, opencv-python, numpy, pillow. See `requirements.txt`.
+- Web: Vite + React in `web/`. Root `package.json` only launches the stack / Tauri.
+- Venv lives at `./venv` (gitignored). No system Python on the original machine had deps.
+- Tests: `./venv/bin/python -m pytest tests/ -v`
+- Qt tests (arrange grid, return-to-opener) need `QT_QPA_PLATFORM=offscreen`.
+- **Do not read `pyqt_aligner.log` wholesale** — it can be tens of MB. Gitignored; safe to delete.
 
 ## Architecture / where things live
 
 | Path | Role |
 |------|------|
-| `main.py` | Entry point. `FocalPointAlignerApp(QApplication)` wires screens. Owns the return-to-opener AND batch auto-advance flows. |
-| `aligner_core.py` | **UI-free core** — `FocalPointAlignerCore`. All state, persistence, image math, discard/reorder/export helpers. |
-| `batch.py` | **UI-free batch core** — `BatchManager` (discovery, done-detection, queue) + `merge_folders()` + `move_aligned_outputs()`. No Qt imports. |
-| `cli.py` | Thin CLI mirroring core operations (init/status/set-focal/navigate/discard/export...). |
-| `ui/opener_screen.py` | Folder selection screen; Single/Batch toggle; batch list + merge/move controls; reads/writes `config.json`. |
-| `ui/aligner_screen.py` | Main screen with 3 tabs: **Original** (thumbnails + focal clicks), **Preview**, **Arrange**. |
-| `ui/arrange_grid.py` | `ArrangeGridWidget`: draggable thumbnail grid for reordering + `ArrangeThumbnailWidget`. |
-| `ui/end_menu.py` | Export dialog (orientation, output folder, progress). |
-| `ui/merge_dialog.py` | Folder-merge dialog (multi-source, prefix naming, aligned-output option). |
-| `ui/navigation_dots.py` | Dot strip for navigation + drag-reorder. |
-| `ui/thumbnail_widget.py`, `ui/image_display.py`, `ui/preview_worker.py` | Support widgets / async previews. |
-| `ui/logger.py` | Logging (writes `pyqt_aligner.log` in the cwd). |
-| `styles.py` | Color palette / widget styles. |
-| `scripts/align_and_scale_images.py` | Legacy batch processor (not used by the GUI). |
-| `align_focal_points.py`, `ui/closer_screen.py`, `ui/main_window.py` | **Legacy / unused**, preserved as reference. Edit only if asked. |
+| `scripts/dev.sh` | GUI launcher used by `npm run dev` |
+| `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge |
+| `web/src/Opener.jsx` | Folder picker, single/batch, merge/move |
+| `web/src/Aligner.jsx` | Original / Preview / Arrange, nav dots, hotkey strip, export overlay |
+| `web/src/crop.js` | JS port of `compute_crop` |
+| `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export. No Qt. |
+| `batch.py` | **UI-free batch** — discovery, done-detection, `merge_folders()`, `move_aligned_outputs()` |
+| `cli.py` | Thin CLI over the core |
+| `src-tauri/` | Optional Tauri 2 shell |
+| `main.py`, `ui/` | **Legacy PyQt GUI**. Edit only if asked. |
+| `align_focal_points.py`, `ui/closer_screen.py`, `ui/main_window.py` | Older unused reference. |
 
 ## Core state (`FocalPointAlignerCore`)
 
-- `image_files: list[Path]` — ordered list that defines export order. **Order lives here; files on disk stay alphabetical.**
-- `focal_points: dict[int, tuple]` — index → `(fx, fy)`.
-- `completed: set[int]`, `auto_center_flags: dict`, `image_dimensions: dict`, `preview_dirty: set[int]`.
-- `discarded: set[str]` — filenames of discarded images.
-- `current_idx: int`.
+- `image_files: list[Path]` — export order. **Order lives here; files on disk stay as-is.**
+- `focal_points: dict[int, tuple]` — index → `(fx, fy)` in **oriented** original pixels (EXIF applied).
+- `completed: set[int]`, `auto_center_flags`, `image_dimensions`, `preview_dirty`.
+- `discarded: set[str]` — filenames.
+- `current_idx: int` — shared across Original / Preview / Arrange. Tab switches must not change it.
 - `json_path` = `<output_folder>/focal_points.json`.
 
 ### Persistence (`focal_points.json`)
 
-- Focal data is keyed by **filename** (so it survives reordering/restart), with `focal_x`, `focal_y`, `original_width/height`, `auto_center`, `timestamp`.
-- Top-level keys used by the app: `discarded` (filenames), `order` (current arrange order as filenames — added for order persistence), `current_idx`, `alignment_mode`, `preview_state`, `_meta`.
-- **`load_focal_points()`** re-applies the saved `order` via `_reorder_files_by_names()` (remaps all index dicts by filename).
-- Preview folders are `<input_folder>_preview_landscape` / `_preview_portrait`, files named `{idx:04d}.jpg` keyed to `image_files` position — they must be renumbered after any discard/reorder (see `discard_current`, `apply_arrange_order`).
-- `config.json` at project root holds opener prefs (`last_input_dir`, `last_output_dir`, `target_width/height`, `max_zoom`, plus batch `mode` and `last_batch_root_dir`). Gitignored.
+- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `timestamp`).
+- Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`.
+- `load_focal_points()` re-applies `order` via `_reorder_files_by_names()`.
+- Thumbs/previews: `<input>/.fpa_cache/` keyed by **filename**, not index (reorder must not reuse the wrong JPEG). Media URLs should cache-bust with `?n=<filename>`.
+- `config.json` at repo root: opener prefs. Gitignored.
 
-## Key invariants — read before touching the Arrange/reorder code
+## Arrange / reorder invariants
 
-1. **`_display_order` must stay in sync with the core image set.**
-   `ArrangeGridWidget._display_order` maps display position → `image_files` index. It is a *transient UI order*: the arrange order only reaches the core when `apply_arrange_order()` is called (manual **Save Order**, or auto-save on tab-leave / before export).
-   Whenever the core image set/order changes, call `grid.sync_from_core()` (resets `_display_order` to identity and rebuilds). Currently wired in:
-   - `ui/aligner_screen.py` `_on_discard` (after `discard_current`),
-   - `_on_tab_changed` when entering the Arrange tab,
-   - `_on_dots_moved` / `_on_shift` (nav-dot drag + `[`/`]` reorders).
-2. **Export order == `image_files` order.** `end_menu.on_export` loops `image_files` and writes `{i:04d}.jpg`; slot `i` is `image_files[i]` with `focal_points[i]`.
-3. **`apply_arrange_order(order)`** requires `len(order) == len(image_files)` and returns `False` on mismatch (silent save failure was a past bug — the UI now warns and re-syncs).
-4. **Discards physically move files** into `<input_folder>/discarded/` and re-scan, shifting all index dicts. `image_files` indexing is compacted (no gaps).
+1. **`apply_arrange_order(order)`** takes `new_position → old_index`, requires `len(order) == len(image_files)`, returns `False` on mismatch.
+2. After a successful reorder, **`current_idx` must follow the same file** (`old_to_new[old_current]`). Silent slot-stay was a bug: Original/Preview showed a different image.
+3. **Export order == `image_files` order.** Slot `i` is `image_files[i]` with `focal_points[i]`.
+4. **Discards** move the file to `<input>/discarded/` and compact all index dicts (no gaps).
+5. Web Arrange uses **filename** as the dnd-kit id (indices remapped 0..n-1 after save). Optimistic reorder then `POST /order`.
 
-## Focal-point setting (Original tab, mouse)
+## Focal clicks (Original tab)
 
-- Left single-click = set pending focal point; Left double-click = save + advance.
-- Right click = set center pending; Right double-click = center + save + advance.
-- Middle-click = discard.
+- Left click = pending focal (crosshair only; no crop overlay).
+- Double-click or **Enter** = save + advance (`set_focal` then `confirm_and_save`).
+- Switching to Preview with a pending click **saves without advancing** so Preview is the same image.
+- Right click = image center as pending.
+- Coordinates must come from the **displayed** image (`naturalWidth` / canvas bounding rect), not a stale session size. Python load/probe applies **EXIF orientation** so clicks match `cv2` pixels.
 
-## Keyboard shortcuts
+## Keyboard
 
-`Enter` save+next · `Space` skip · `←→` navigate · `X` discard · `Del` clear focal · `P` preview · `O` toggle landscape/portrait · `A` Arrange tab · `[`/`]` shift order · `R` reset focal points · `F` finish/export · `Escape` finish batch (returns to opener) · `G` show position.
+`Enter` save+next · `Space` skip · `←→` navigate (no wrap) · `X` discard · `Del` clear · `P` preview · `O` orientation · `A` arrange · `[`/`]` shift order · `R` reset · `F` export · `Esc` opener / next batch.
 
 ## Image-size framing (crop math)
 
-- `aligner_core.compute_crop()` — bounded-zoom crop rect in original pixels.
-  `scale = clamp(max(cover, focal_scale), 0 .. cover*max_zoom)`; `cover` fits the
-  whole image to the frame. `aligner_core.render_aligned()` renders to exactly
-  target dims and uses a **blur-fill** path when `cover > UPSCALE_CAP`.
-- Tunable constants: `DEFAULT_MAX_ZOOM = 3.0` (slider default, range 1.0-6.0),
-  `UPSCALE_CAP = 2.0`. Slider persists `max_zoom` in `config.json`. Keep preview,
-  export, and the Original-tab overlay in sync by using `render_aligned` /
-  `compute_crop` and `core.max_zoom` everywhere (see `ui/preview_worker.py`,
-  `ui/image_display.py`).
-- Zoom slider lives in the Original-tab header (`ui/aligner_screen.py`); changing
-  it marks all previews dirty so they regenerate. Tests: `tests/test_crop_math.py`.
+- `compute_crop(fx, fy, orig_w, orig_h, target_w, target_h)` — focal centered, clamped at edges.
+  - Source ≥ target in both dims: **1:1** crop of `(target_w, target_h)`.
+  - Source smaller on either side: scale up just enough to **cover**, then crop.
+- `render_aligned()` crops that rect and resizes to the target. No blur-fill, no max-zoom overlay.
+- `max_zoom` remains on the API/config for compatibility; it does **not** change framing.
+- Tests: `tests/test_crop_math.py` (including “focal lands at output center”).
 
-## Return-to-opener flow (recent behavior change)
+## Tab / selection sync
 
-`main.py:on_aligner_finished` now hides/closes the aligner screen and **shows the opener again** instead of quitting the app (previously it called `self.quit()`). Triggered by:
-- `aligner_screen.aligner_finished` (emitted by `_on_quit` on **Escape**, and by `_on_export_complete` after export finishes),
-- `aligner_screen.quit_requested` (emitted when no images remain).
+- One `current_idx` for Original, Preview, Arrange, nav dots, discard.
+- Arrow keys do not wrap on any tab (stops at ends). Preview wrap was making tabs feel “on a different image”.
+- Discard (`POST /discard?index=`) uses that index; all lists compact together.
 
-`ui/end_menu.py:on_export` no longer calls `QApplication.instance().quit()`; it emits `export_complete`, which `AlignerScreen._on_export_complete` forwards as `aligner_finished`. Keep this unbroken: the EndMenu must **not** quit the app directly, or the return-to-opener flow is bypassed.
+## Batch mode
 
-## Batch mode (root folder)
-
-- Opener `mode` toggle (`"single"`/`"batch"`, persisted in `config.json`) switches between the single-folder stack page and the batch page. `opener.batch_started(dict)` → `main.on_batch_started`.
-- `main.py` auto-advance: `on_aligner_finished` in batch mode calls `_open_next_batch_folder()` instead of showing the opener. `BatchManager.next_pending()` returns the first sub-folder whose `<sub>_aligned` output **does not** contain images.
-- **Do not loop on escaped batches:** `main.py:on_batch_started` resets `_batch_seen`; `_open_next_batch_folder` skips folders already opened this session and skips done folders. Escaping without exporting leaves a folder "pending", so the next `Start Batch` resumes it (focal data survives in that folder's `<output_folder>/focal_points.json`).
-- Batch config in `main._open_next_batch_folder` always sets `output_folder` to `<root>/<sub>_aligned` so done-detection and the export destination agree.
-- Merge (`batch.merge_folders`, `delete_sources=False` by default) copies with `<source>_` prefix; the merge dialog's "Delete source folders after merging" checkbox passes `delete_sources=True`, and failed sources are never deleted. Move aligned (`batch.move_aligned_outputs`) physically moves `<sub>_aligned` folders into sibling `<root>_aligned`.
-- The batch **list** (`build_queue` via `discover_all_folders`) shows every
-  image-bearing subfolder including `*_aligned`; `*_aligned` folders report
-  `done=True`. Auto-advance (`next_pending`) uses the narrow
-  `discover_subfolders` and never re-opens aligned outputs.
-- `batch.folder_is_aligned(folder)` — True when a folder is `*_aligned` with
-  images or has an aligned output with images. The merge dialog auto-suffixes
-  `_aligned` to the output name when all sources are aligned.
-- Merge dialog (`ui/merge_dialog.py`) uses extended selection for multi-select
-  and a "Merged folder name:" field; output = common parent of sources / name.
+- Opener `mode` `"single"` / `"batch"` in `config.json`.
+- Auto-advance: next pending subfolder whose `<sub>_aligned` does **not** already contain images.
+- Do not loop on escaped batches: skip folders already opened this session; Esc without export leaves the folder pending (focals survive in that folder’s `focal_points.json`).
+- Merge (`batch.merge_folders`) prefixes `<source>_`; `delete_sources=True` only after success.
+- Move aligned: `<sub>_aligned` → sibling `<root>_aligned`.
+- List shows image-bearing subfolders including `*_aligned` (`done=True`); auto-advance never re-opens those.
 
 ## Testing
 
-- `tests/test_cli.py` — CLI subprocess tests (needs `cli.py` runnable with the venv Python).
-- `tests/test_crop_math.py` — `compute_crop` / `render_aligned` framing and zoom-cap tests.
-- `tests/test_batch.py` — `batch.py` unit tests (discovery, done-detection, merge prefix/dedupe, move-aligned).
-- `tests/test_arrange_order.py` — regression tests for discard → reorder → persist → reload, plus headless grid sync (copied regression: discarded images must vanish from the Arrange grid, arrange order must reach export and survive reload).
-- `tests/test_return_to_opener.py` — return-to-opener flow AND batch auto-advance (done-based advance + escape-without-export no-loop).
-- `tests/test_arrange_drag.py` — manual/print-only helper, no assertions.
-- Run all: `QT_QPA_PLATFORM=offscreen ./venv/bin/python -m pytest tests/ -v`.
-- `main.py --config <path.json>` boots straight into the aligner (skips opener) — handy for smoke tests.
+- `tests/test_cli.py` — CLI subprocess (venv Python).
+- `tests/test_crop_math.py` — crop / render_aligned.
+- `tests/test_api.py` — FastAPI session, media, export, navigate no-op at ends.
+- `tests/test_core_io.py` — header probe, EXIF size, filename-keyed cache, confirm does not write full-res.
+- `tests/test_batch.py` — discovery, merge, move-aligned.
+- `tests/test_arrange_order.py` — discard → reorder → persist; **current_idx follows the file**.
+- `tests/test_return_to_opener.py` — PyQt return-to-opener + batch auto-advance.
+- Run: `./venv/bin/python -m pytest tests/ -v`
 
 ## Building
 
-`./build_macos.sh` → PyInstaller → `dist/FocalPointAligner.app` (see `FocalPointAligner.spec`).
+- Dev GUI: `npm run dev`
+- Tauri window: `npm run desktop`
+- Tauri release: `npm run build`
+- Legacy PyInstaller: `./build_macos.sh` → `dist/FocalPointAligner.app`
 
 ## Conventions
 
-- Core logic stays in `aligner_core.py` (no Qt imports there). UI lives in `ui/`.
-- Keep the Arrange order/discard invariants above when modifying reorder/export code.
-- Git log shows a long history of brittle arrange-tab fixes; prefer `sync_from_core()`-style reconciliation over ad-hoc rebuilds.
-- Debug-log generously via `from ui.logger import logger`; the log file is the primary runtime aid.
+- Crop/reorder/export logic stays in `aligner_core.py` (no Qt, no React).
+- Prefer remapping index dicts from filenames after discard/reorder over ad-hoc UI rebuilds.
+- Keep Original / Preview / Arrange on the same `current_idx`.

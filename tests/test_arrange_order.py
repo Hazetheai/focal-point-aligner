@@ -107,6 +107,20 @@ def test_order_persists_through_reload():
         assert names == ["image0002.jpg", "image0000.jpg", "image0001.jpg", "image0003.jpg", "image0004.jpg"], names
 
 
+def test_apply_arrange_order_keeps_current_image():
+    """current_idx must follow the selected file, not the old slot."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        core = _make_core(Path(tmp_dir), count=5)
+        _set_all_focal(core)
+        core.current_idx = 0
+        name = core.image_files[0].name
+        assert core.apply_arrange_order([1, 2, 0, 3, 4]) is True
+        assert core.image_files[core.current_idx].name == name
+        assert core.current_idx == 2
+
+
 @pytest.fixture
 def qapp():
     import os

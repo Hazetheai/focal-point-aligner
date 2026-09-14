@@ -57,6 +57,7 @@ def cmd_init(args):
         "input_folder": str(input_path.resolve()),
         "target_width": args.width,
         "target_height": args.height,
+        "max_zoom": getattr(args, "max_zoom", None) or 3.0,
     }
     
     if args.output:
@@ -80,6 +81,7 @@ def cmd_init(args):
         "invalid_images": len(core.invalid_images) if hasattr(core, 'invalid_images') else 0,
         "target_width": core.target_width,
         "target_height": core.target_height,
+        "max_zoom": core.max_zoom,
     }, args.json)
     
     if args.gui:
@@ -285,25 +287,83 @@ def cmd_reset(args):
 
 
 def cmd_export(args):
-    """Export aligned images."""
+    """Export aligned images into the output folder (GUI path)."""
     core = load_core_from_config()
     if core is None:
         output_error("No project initialized. Run 'init' first.", args.json)
         return 1
 
     orientation = args.orientation or core.alignment_mode or "landscape"
-    core.set_alignment_mode(orientation)
-
-    core.prepare_aligned_previews(orientation)
-
-    folder = core.get_preview_folder(orientation)
-    count = core.get_preview_image_count(orientation)
+    dest = Path(args.output).resolve() if getattr(args, "output", None) else core.output_folder
+    exported = core.export_aligned(dest, orientation)
+    if getattr(args, "cleanup", False):
+        core.cleanup_preview_folders()
+        core.delete_focal_points_file()
 
     output_success({
-        "message": f"Exported {count} images in {orientation} orientation",
-        "output_folder": str(folder),
+        "message": f"Exported {exported} images in {orientation} orientation",
+        "output_folder": str(dest),
         "orientation": orientation,
+        "exported": exported,
     }, args.json)
+    return 0
+
+
+def cmd_order(args):
+    core = load_core_from_config()
+    if core is None:
+        output_error("No project initialized. Run 'init' first.", args.json)
+        return 1
+    order = [int(x) for x in args.indices.split(",")]
+    if not core.apply_arrange_order(order):
+        output_error("Order length mismatch", args.json)
+        return 1
+    core.save_focal_points()
+    output_success({
+        "order": [f.name for f in core.image_files],
+    }, args.json)
+    return 0
+
+
+def cmd_move_image(args):
+    core = load_core_from_config()
+    if core is None:
+        output_error("No project initialized. Run 'init' first.", args.json)
+        return 1
+    ok = core.move_image(args.frm, args.to)
+    if not ok:
+        output_error("Could not move image", args.json)
+        return 1
+    output_success({
+        "order": [f.name for f in core.image_files],
+        "current_index": core.current_idx,
+    }, args.json)
+    return 0
+
+
+def cmd_merge(args):
+    from batch import merge_folders
+    report = merge_folders(
+        [Path(s) for s in args.sources],
+        Path(args.dest),
+        use_aligned=not args.raw,
+        delete_sources=args.delete_sources,
+    )
+    output_success(report, args.json)
+    return 0
+
+
+def cmd_move_aligned(args):
+    from batch import move_aligned_outputs
+    report = move_aligned_outputs(Path(args.root))
+    output_success(report, args.json)
+    return 0
+
+
+def cmd_batch_list(args):
+    from batch import BatchManager
+    mgr = BatchManager(Path(args.root))
+    output_success({"queue": mgr.build_queue()}, args.json)
     return 0
 
 
@@ -593,6 +653,7 @@ def main():
     p.add_argument("--output", help="Output folder path")
     p.add_argument("--width", type=int, default=2560, help="Target width")
     p.add_argument("--height", type=int, default=1440, help="Target height")
+    p.add_argument("--max-zoom", dest="max_zoom", type=float, default=3.0, help="Max zoom (cover multiplier)")
     p.add_argument("--gui", action="store_true", help="Launch GUI after initialization")
 
     p = subparsers.add_parser("status", help="Show current status")
@@ -624,6 +685,27 @@ def main():
 
     p = subparsers.add_parser("export", help="Export aligned images")
     p.add_argument("--orientation", choices=["landscape", "portrait"], help="Orientation")
+    p.add_argument("--output", help="Destination folder (default: session output_folder)")
+    p.add_argument("--cleanup", action="store_true", help="Delete cache and focal_points.json after export")
+
+    p = subparsers.add_parser("order", help="Apply arrange order (comma-separated original indices)")
+    p.add_argument("--indices", required=True, help="e.g. 2,0,1,3")
+
+    p = subparsers.add_parser("move-image", help="Move image from one index to another")
+    p.add_argument("--from", dest="frm", type=int, required=True)
+    p.add_argument("--to", type=int, required=True)
+
+    p = subparsers.add_parser("merge", help="Merge image folders")
+    p.add_argument("--sources", nargs="+", required=True)
+    p.add_argument("--dest", required=True)
+    p.add_argument("--raw", action="store_true", help="Do not prefer *_aligned outputs")
+    p.add_argument("--delete-sources", action="store_true")
+
+    p = subparsers.add_parser("move-aligned", help="Move *_aligned folders beside the root")
+    p.add_argument("--root", required=True)
+
+    p = subparsers.add_parser("batch-list", help="List batch queue for a root folder")
+    p.add_argument("--root", required=True)
 
     p = subparsers.add_parser("stats", help="Show progress statistics")
 
@@ -668,6 +750,11 @@ def main():
         "discard": cmd_discard,
         "reset": cmd_reset,
         "export": cmd_export,
+        "order": cmd_order,
+        "move-image": cmd_move_image,
+        "merge": cmd_merge,
+        "move-aligned": cmd_move_aligned,
+        "batch-list": cmd_batch_list,
         "stats": cmd_stats,
         "list-images": cmd_list_images,
         "get-image": cmd_get_image,

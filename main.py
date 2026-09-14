@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Focal Point Aligner GUI application.
+Legacy PyQt6 GUI entry point.
+
+The primary desktop UI is the Tauri + React app (`npm run dev` / `./build_macos.sh`).
+This module remains for existing Qt tests and as a fallback.
 """
 
 import os

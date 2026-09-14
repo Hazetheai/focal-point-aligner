@@ -242,3 +242,32 @@ class TestCLIErrorHandling:
             cwd=PROJECT_DIR
         )
         assert result.returncode != 0
+
+
+class TestCLIExportAndOrder:
+    def test_order_and_export_to_output_folder(self, initialized_cli):
+        temp_image_dir, output_dir, _ = initialized_cli
+        for i in range(5):
+            subprocess.run(
+                [sys.executable, "cli.py", "set-focal", "--index", str(i), "--x", "100", "--y", "50", "--json"],
+                cwd=PROJECT_DIR, check=True, capture_output=True,
+            )
+        result = subprocess.run(
+            [sys.executable, "cli.py", "order", "--indices", "2,0,1,3,4", "--json"],
+            capture_output=True, text=True, cwd=PROJECT_DIR,
+        )
+        assert result.returncode == 0, result.stderr
+        names = json.loads(result.stdout)["order"]
+        assert names[0].startswith("image0002")
+
+        dest = output_dir / "export_out"
+        result = subprocess.run(
+            [sys.executable, "cli.py", "export", "--orientation", "landscape",
+             "--output", str(dest), "--json"],
+            capture_output=True, text=True, cwd=PROJECT_DIR,
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        data = json.loads(result.stdout)
+        assert data["exported"] == 5
+        assert (dest / "0000.jpg").exists()
+        assert data["output_folder"] == str(dest)

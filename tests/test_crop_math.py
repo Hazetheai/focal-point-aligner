@@ -2,20 +2,13 @@ import math
 
 import numpy as np
 
-from aligner_core import (
-    compute_crop,
-    crop_to_widget,
-    render_aligned,
-    DEFAULT_MAX_ZOOM,
-    UPSCALE_CAP,
-)
+from aligner_core import compute_crop, crop_to_widget, render_aligned
 
 
 def test_crop_to_widget_mapping():
     # orig 4000x3000 shown in 800x600 widget at img origin (10, 5)
     wx, wy, ww, wh = crop_to_widget(0, 0, 2000, 1500, 10, 5, 800, 600, 4000, 3000)
     assert (wx, wy, ww, wh) == (10, 5, 400, 300)
-    # half-of-original crop maps to half-of-display
 
 
 def _make_img(w, h):
@@ -24,20 +17,18 @@ def _make_img(w, h):
     return img
 
 
-def test_render_aligned_tiny_uses_blur_fill():
+def test_render_aligned_tiny_still_fills_frame():
     img = _make_img(500, 300)
     aligned, used_blur = render_aligned(img, (250, 150), 2560, 1440)
     assert aligned.shape[:2] == (1440, 2560)
-    assert used_blur is True
+    assert used_blur is False
 
 
-def test_render_aligned_tiny_sharp_subject_not_overscaled():
+def test_render_aligned_tiny_output_dims():
     img = _make_img(320, 240)
     aligned, used_blur = render_aligned(img, (160, 120), 2560, 1440)
-    assert used_blur is True
-    # subject region must not be upscaled beyond UPSCALE_CAP
-    sub_w = int(320 * UPSCALE_CAP)
-    assert sub_w <= 1440  # must not fill a 2560-wide frame at <=2x
+    assert used_blur is False
+    assert aligned.shape[:2] == (1440, 2560)
 
 
 def test_render_aligned_large_uses_normal_path():
@@ -60,50 +51,76 @@ def test_render_aligned_none_focal_defaults_to_center():
     assert aligned.shape[:2] == (1440, 2560)
 
 
-def _run(fx, fy, ow, oh, tw, th, max_zoom=DEFAULT_MAX_ZOOM):
-    x, y, w, h = compute_crop(fx, fy, ow, oh, tw, th, max_zoom)
-    return x, y, w, h
+def _run(fx, fy, ow, oh, tw=2560, th=1440):
+    return compute_crop(fx, fy, ow, oh, tw, th)
 
 
-def test_large_image_uses_reasonable_fraction():
-    x, y, w, h = _run(6000, 4000, 12000, 8000, 2560, 1440)
-    frac = w / 12000
-    assert frac >= 0.25, f"too zoomed: only {frac*100:.1f}% of width"
+def test_large_image_takes_target_sized_crop():
+    x, y, w, h = _run(6000, 4000, 12000, 8000)
+    assert abs(w - 2560) <= 1
+    assert abs(h - 1440) <= 1
+    assert abs((x + w / 2) - 6000) < 2
+    assert abs((y + h / 2) - 4000) < 2
 
 
-def test_large_image_at_zoom_one_is_full_image():
-    x, y, w, h = _run(6000, 4000, 12000, 8000, 2560, 1440, max_zoom=1.0)
-    assert w >= 12000 * 0.999, f"expected full image, got region width {w}"
+def test_medium_image_takes_target_sized_crop():
+    x, y, w, h = _run(2000, 1500, 4000, 3000)
+    assert abs(w - 2560) <= 1
+    assert abs(h - 1440) <= 1
+    assert 0 <= x <= 4000 - w
+    assert 0 <= y <= 3000 - h
 
 
-def test_medium_centered_focal_shows_full_width():
-    # 4:3 into 16:9 at center: cover fills the frame, whole width visible,
-    # excess height cropped (cover semantics, the approved baseline)
-    x, y, w, h = _run(2000, 1500, 4000, 3000, 2560, 1440)
-    assert w >= 4000 * 0.999
-    assert y >= 0 and y + h <= 3000
+def test_small_image_covers_frame_and_scales_up():
+    x, y, w, h = _run(250, 150, 500, 300)
+    assert w == 500
+    assert abs(h - 500 * 1440 / 2560) <= 2
+    assert x == 0
 
 
-def test_medium_offcenter_zoom_is_bounded():
-    _, _, w, h = _run(1000, 1500, 4000, 3000, 2560, 1440)
-    cover = max(2560 / 4000, 1440 / 3000)
-    scale = 2560 / w
-    assert scale >= cover * 0.999
-    assert scale <= cover * DEFAULT_MAX_ZOOM * 1.001
+def test_focal_is_centered_when_it_fits():
+    x, y, w, h = _run(4000, 3000, 8000, 6000)
+    assert abs((x + w / 2) - 4000) < 2
+    assert abs((y + h / 2) - 3000) < 2
+
+
+def test_focal_near_edge_clamps_crop():
+    x, y, w, h = _run(10, 10, 8000, 6000)
+    assert x == 0
+    assert y == 0
+    assert abs(w - 2560) <= 1
+    assert abs(h - 1440) <= 1
 
 
 def test_crop_region_aspect_matches_target():
-    # dims are integer-rounded, so allow ~2px on the cross-product
     for ow, oh in [(12000, 8000), (4000, 3000), (500, 300)]:
-        _, _, w, h = _run(ow / 2, oh / 2, ow, oh, 2560, 1440)
+        _, _, w, h = _run(ow / 2, oh / 2, ow, oh)
         cap = abs(w * 1440 - h * 2560)
         assert cap <= 2560 * 2, f"aspect off by {cap}px-cross for {ow}x{oh}"
         assert 0 <= w <= ow and 0 <= h <= oh
 
 
-def test_out_of_bounds_focal_clamps():
-    # focal near/at corners must not blow up or produce inf/nan
+def test_render_aligned_puts_focal_at_center():
+    """A marked pixel at the focal should land on the output center when it fits."""
+    img = np.zeros((4000, 6000, 3), dtype=np.uint8)
+    fx, fy = 3000, 2200
+    img[fy, fx] = (0, 255, 0)
+    aligned, _ = render_aligned(img, (fx, fy), 2560, 1440)
+    cy, cx = 1440 // 2, 2560 // 2
+    patch = aligned[cy - 3:cy + 4, cx - 3:cx + 4, 1]
+    assert patch.max() == 255
     for fx, fy in [(1, 1), (2, 2), (11999, 7999)]:
-        x, y, w, h = _run(fx, fy, 12000, 8000, 2560, 1440)
+        x, y, w, h = _run(fx, fy, 12000, 8000)
         assert all(math.isfinite(v) for v in (x, y, w, h))
         assert x >= 0 and y >= 0 and x + w <= 12000 and y + h <= 8000
+
+
+def test_render_aligned_puts_focal_at_center():
+    """A marked pixel at the focal should land on the output center when it fits."""
+    img = np.zeros((4000, 6000, 3), dtype=np.uint8)
+    fx, fy = 3000, 2200
+    img[fy, fx] = (0, 255, 0)
+    aligned, _ = render_aligned(img, (fx, fy), 2560, 1440)
+    cy, cx = 1440 // 2, 2560 // 2
+    patch = aligned[cy - 3:cy + 4, cx - 3:cx + 4, 1]
+    assert patch.max() == 255

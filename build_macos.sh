@@ -1,46 +1,24 @@
-#!/bin/bash
-# Build script for FocalPointAligner macOS .app bundle
+#!/usr/bin/env bash
+# Build the Tauri macOS .app (React UI + Python FastAPI sidecar at runtime via venv).
+set -e
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
 
-set -e  # Exit on error
-
-echo "=== FocalPointAligner Build Script ==="
-echo ""
-
-# Check if conda is available
-if ! command -v conda &> /dev/null; then
-    echo "Error: conda not found. Please install Miniconda."
-    exit 1
+if [ ! -x "./venv/bin/python" ]; then
+  echo "Create ./venv first: python3 -m venv venv && ./venv/bin/pip install -r requirements.txt"
+  exit 1
 fi
 
-# Activate the environment
-ENV_NAME="image-morph"
-echo "Activating conda environment: $ENV_NAME"
+if [ ! -d web/node_modules ]; then
+  npm --prefix web install
+fi
+if [ ! -d node_modules ]; then
+  npm install
+fi
 
-# Set Qt plugin path for PyInstaller
-export QT_QPA_PLATFORM_PLUGIN_PATH="/opt/miniconda3/envs/image-morph/lib/qt6/plugins/platforms"
-
-# Clean previous builds
-echo ""
-echo "Cleaning previous builds..."
-rm -rf build dist
-
-# Run PyInstaller
-echo ""
-echo "Running PyInstaller..."
-conda run -n $ENV_NAME pyinstaller FocalPointAligner.spec --clean
+source "$HOME/.cargo/env" 2>/dev/null || true
+npm run build
 
 echo ""
-echo "=== Build Complete ==="
-echo ""
-echo "Output location: dist/"
-echo "App bundle: dist/FocalPointAligner.app"
-echo ""
-echo "To create a ZIP file for distribution:"
-echo "  cd dist"
-echo "  zip -r FocalPointAligner-macOS.zip FocalPointAligner.app"
-echo ""
-echo "To run the app:"
-echo "  open dist/FocalPointAligner.app"
-echo ""
-echo "Note: On first run, macOS may show a warning about unidentified developer."
-echo "To bypass: Right-click the app and select 'Open', then click 'Open' in the dialog."
+echo "App bundle: src-tauri/target/release/bundle/macos/Focal Point Aligner.app"
+echo "The app expects this project (and ./venv) next to it for the Python API, or set FPA_ROOT / FPA_PYTHON."
