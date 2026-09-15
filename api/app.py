@@ -71,6 +71,7 @@ class FocalBody(BaseModel):
     y: float
     auto_center: bool = False
     index: Optional[int] = None
+    crop_scale: Optional[float] = None
 
 
 class NavigateBody(BaseModel):
@@ -245,7 +246,12 @@ def set_focal(body: FocalBody):
     if body.index is not None:
         if not core.navigate_to(body.index):
             raise HTTPException(400, "Index out of range")
-    core.set_focal_point(body.x, body.y, auto_center=body.auto_center)
+    core.set_focal_point(
+        body.x,
+        body.y,
+        auto_center=body.auto_center,
+        crop_scale=body.crop_scale,
+    )
     core.save_focal_points()
     return core.session_snapshot()
 

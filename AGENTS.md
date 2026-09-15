@@ -11,8 +11,8 @@ Current GUI: **React (Vite) + FastAPI**, optional Tauri shell. PyQt6 in `main.py
 Workflow:
 
 1. Opener: pick input folder → target width/height → **Start** (or Batch on a root of subfolders).
-2. **Original**: click focal point; Enter / double-click saves and advances; **X** / middle-click discards. Resizable prev / current / next columns; expandable image facts (path: first click expands, second copies).
-3. **Preview**: aligned crop of the **same** `current_idx` as Original / Arrange. No saved focal → show original; never persist a silent center focal from preview generation.
+2. **Original**: click focal point; mouse wheel resizes the crop box (aspect-aware `crop_scale`); Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Resizable prev / current / next columns; expandable image facts (path: first click expands, second copies).
+3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel to change `crop_scale`; `<` fades previous on top, `>` fades next on top; Compare (saved vs draft) + Commit. No saved focal → show original; never persist a silent center focal from preview generation.
 4. **Arrange**: drag thumbnails to set export order; **Original** / **Aligned** thumb toggle. Selection follows the file, not the old slot.
 5. **F** / Export writes `{idx:04d}.jpg` to the output folder.
 6. **Esc** (or Done) returns to the opener; in batch mode it opens the next pending folder.
@@ -29,13 +29,14 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Focal clicks (Original tab)
 
-- Left click = pending focal (crosshair + crop overlay).
-- Double-click or **Enter** = save + advance (`set_focal` then `confirm_and_save`).
+- Left click / drag = pending focal (crosshair + crop overlay); drag moves the crop box with live magnified preview.
+- Mouse wheel = grow/shrink the crop box (`crop_scale`, aspect locked). Scroll up zooms in.
+- Double-click or **Enter** = save + advance (`set_focal` then `confirm_and_save`), including current `crop_scale`.
 - Switching to Preview with a pending click **saves without advancing** so Preview is the same image.
 - Right click = image center as pending (`auto_center`); right **double-click** confirms that center focal and advances.
-- Middle click = discard current image.
+- **Shift+middle click** = discard current image (Shift required so wheel/MMB zoom is not mis-clicks).
 - Coordinates must come from the **displayed** image (`naturalWidth` / canvas bounding rect), not a stale session size. Python load/probe applies **EXIF orientation** so clicks match `cv2` pixels.
-- After a click, draw a dim overlay **outside** `compute_crop` with a white border so the keep-region (crop or upscale cover) is visible. No zoom-drag overlay.
+- After a click, draw a dim overlay on the photo and fill the requested `compute_crop_frame` box with the effective `compute_crop` sample (Preview-equivalent magnification when the frame would leave the image). White border on that box. No zoom-drag overlay.
 - Original stage: show the photo as a visible `<img>`; canvas is a transparent overlay for crosshair/crop only. Do not paint from a `display:none` image (cached loads skip `onLoad` and leave a blank stage).
 - Header filename truncates; tabs stay in a fixed center column so layout does not jump between images.
 - Image facts **Path**: truncated by default; first click expands full path; second click copies; closing Details resets truncation.
@@ -57,7 +58,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 | `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, folder dialog |
 | `web/src/Opener.jsx` | Folder picker, single/batch, merge/move |
 | `web/src/Aligner.jsx` | Original / Preview / Arrange (original vs aligned thumbs), nav dots, hotkey strip |
-| `web/src/crop.js` | JS port of `compute_crop` |
+| `web/src/crop.js` | JS port of `compute_crop` / `compute_crop_frame` |
 | `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export. No Qt. |
 | `batch.py` | **UI-free batch** — discovery, done-detection, `merge_folders()`, `move_aligned_outputs()` |
 | `cli.py` | Thin CLI over the core |
@@ -73,11 +74,11 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - `discarded: set[str]` — filenames.
 - `current_idx: int` — shared across Original / Preview / Arrange. Tab switches must not change it.
 - `json_path` = `<output_folder>/focal_points.json`.
-- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`.
+- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`.
 
 ### Persistence (`focal_points.json`)
 
-- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `timestamp`).
+- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `timestamp`).
 - Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`.
 - `load_focal_points()` re-applies `order` via `_reorder_files_by_names()`.
 - Thumbs/previews: `<input>/.fpa_cache/` keyed by **filename**, not index (reorder must not reuse the wrong JPEG). Media URLs should cache-bust with `?n=<filename>`.
@@ -93,20 +94,24 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Keyboard
 
-`Enter` save+next · `Space` skip · `←→` navigate (no wrap) · `X` discard · `Del` clear · `P` preview · `O` orientation · `A` arrange · `[`/`]` shift order · `R` reset · `F` export · `Esc` opener / next batch.
+`Enter` save+next · `Space` skip · `←→` navigate (no wrap) · `X` / **Shift+MMB** discard · `Del` clear · `P` preview · `O` orientation · `A` arrange · `[`/`]` shift order · `R` reset · `F` export · `Esc` opener / next batch · Preview `<` previous / `>` next overlay.
 
-Mouse on Original: left click pending · left double save+next · right click center pending · right double center save+next · middle click discard.
+Mouse on Original: left click/drag pending · wheel crop size · left double save+next · right click center pending · right double center save+next · Shift+middle discard.
+
+Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Compare / Commit for fine-tune.
 
 ## Image-size framing (crop math)
 
-- `compute_crop(fx, fy, orig_w, orig_h, target_w, target_h)` — focal centered, clamped at edges.
-  - Source ≥ target in both dims: **1:1** crop of `(target_w, target_h)`.
-  - Source smaller on either side: scale up just enough to **cover**, then crop.
+- `compute_crop_frame(...)` — requested target-aspect box centered on the focal for the Original overlay; grows/shrinks with `crop_scale` and **may extend past the photo edges**.
+- `compute_crop(...)` — effective in-bounds sample for Preview/export. Always centered on the focal; when the requested frame would leave the image, uses the largest centered fit and upscales (never slides along an edge). Large sources default to a 1:1 target crop at `crop_scale=1`; small or edge focals scale up as needed (`MIN_CROP_SCALE`…`MAX_CROP_SCALE`).
+ - Source ≥ target and focal centered: **1:1** crop of `(target_w, target_h)`.
+ - Source smaller, or focal near an edge: scale up enough to **cover** and keep the focal centered.
 - `render_aligned()` crops that rect and resizes to the target. No blur-fill, no max-zoom overlay.
-- After a focal is pending or saved, Original draws that rect as a dim outside-region + white border (not a zoom control).
+- After a focal is pending or saved, Original fills the **requested** crop box with the effective sample (magnified Preview-equivalent when the frame extends past the photo), dims the rest of the photo, and strokes a white border.
+- Per-image `crop_scale` is stored in `focal_points.json` / session snapshot alongside the focal. Leaving an image (nav, tab switch, arrange select) flushes pending Original / Preview crop changes so the next image starts at its own scale (default `1.0` until altered) and returning restores that image’s saved scale.
 - `ensure_preview_for_current` / Arrange aligned thumbs may render with a display-only center when unset, but must **not** write `focal_points` / `auto_center_flags`.
-- `max_zoom` remains on the API/config for compatibility; it does **not** change framing.
-- Tests: `tests/test_crop_math.py` (including “focal lands at output center”).
+- `max_zoom` remains on the API/config for compatibility; framing uses `crop_scale` instead.
+- Tests: `tests/test_crop_math.py` (including “focal lands at output center” and crop_scale grow/shrink).
 
 ## Pagination
 

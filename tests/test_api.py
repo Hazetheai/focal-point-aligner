@@ -131,6 +131,47 @@ def test_preview_without_focal_does_not_set_focal(client, tmp_path):
     assert snap["auto_center"] is False
 
 
+def test_set_focal_with_crop_scale(client, tmp_path):
+    src = _imgs(tmp_path)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    # Centered focal so zoom-out can grow while staying locked on the point.
+    r = client.post("/focal", json={"x": 160, "y": 120, "index": 0, "crop_scale": 1.5})
+    assert r.status_code == 200
+    im = r.json()["images"][0]
+    assert im["focal"] == [160.0, 120.0]
+    assert abs(im["crop_scale"] - 1.5) < 1e-6
+    crop = client.get("/crop/0").json()
+    assert abs(crop["crop_scale"] - 1.5) < 1e-6
+    assert crop["w"] > 160 or crop["h"] > 90
+    assert abs((crop["x"] + crop["w"] / 2) - 160) < 2
+    assert abs((crop["y"] + crop["h"] / 2) - 120) < 2
+
+
+def test_crop_scale_is_per_image(client, tmp_path):
+    src = _imgs(tmp_path, 2)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    client.post("/focal", json={"x": 80, "y": 60, "index": 0, "crop_scale": 2.0})
+    client.post("/focal", json={"x": 40, "y": 30, "index": 1, "crop_scale": 0.75})
+    snap = client.get("/session").json()["images"]
+    assert abs(snap[0]["crop_scale"] - 2.0) < 1e-6
+    assert abs(snap[1]["crop_scale"] - 0.75) < 1e-6
+    # New / unset images stay at default scale until altered.
+    client.delete("/focal", params={"index": 1})
+    snap = client.get("/session").json()["images"]
+    assert abs(snap[0]["crop_scale"] - 2.0) < 1e-6
+    assert abs(snap[1]["crop_scale"] - 1.0) < 1e-6
+
+
 def test_export_writes_numbered_jpegs(client, tmp_path):
     src = _imgs(tmp_path, 2)
     client.post("/session", json={

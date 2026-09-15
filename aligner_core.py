@@ -6,6 +6,7 @@ No UI code - designed to be used by PyQt6 UI.
 """
 
 import json
+import math
 import shutil
 import threading
 import time
@@ -31,11 +32,38 @@ JSON_VERSION = "2.0"
 
 # Sensible framing for any image size. Tweak these if output framing feels wrong;
 # they are documented in README.md and AGENTS.md.
-DEFAULT_MAX_ZOOM = 3.0  # slider default (range 1.0-6.0); cap = cover * this
-UPSCALE_CAP = 2.0       # max real upscale of the sharp subject before blur-fill
+DEFAULT_MAX_ZOOM = 3.0  # session/config compatibility; framing uses crop_scale
+UPSCALE_CAP = 2.0       # unused legacy; kept for importers
 THUMB_MAX = 512
 CACHE_DIR_NAME = ".fpa_cache"
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+DEFAULT_CROP_SCALE = 1.0
+MIN_CROP_SCALE = 0.25   # zoom in vs base framing
+MAX_CROP_SCALE = 8.0    # zoom out (clamped by image bounds)
+
+
+def clamp_crop_scale(crop_scale):
+    try:
+        value = float(crop_scale)
+    except (TypeError, ValueError):
+        value = DEFAULT_CROP_SCALE
+    if not math.isfinite(value):
+        value = DEFAULT_CROP_SCALE
+    return max(MIN_CROP_SCALE, min(value, MAX_CROP_SCALE))
+
+
+def max_crop_for_aspect(orig_w, orig_h, target_w, target_h):
+    """Largest target-aspect rectangle that fits in the source."""
+    aspect = target_w / target_h if target_h else 1.0
+    if orig_h <= 0 or orig_w <= 0:
+        return 1.0, 1.0
+    if (orig_w / orig_h) >= aspect:
+        h = float(orig_h)
+        w = h * aspect
+    else:
+        w = float(orig_w)
+        h = w / aspect
+    return w, h
 
 
 def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_h):
@@ -86,30 +114,94 @@ def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_
     return crop_x, crop_y, scale, target_w, target_h
 
 
-def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
-    """Return (x, y, w, h) crop rectangle in original pixels.
+def _crop_scales(focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale):
+    """Return (fx, fy, s_req, s_eff, w_fit, h_fit) for framing helpers."""
+    eps = 1e-6
+    fx = max(eps, min(float(focal_x), orig_w - eps))
+    fy = max(eps, min(float(focal_y), orig_h - eps))
+    aspect = target_w / target_h if target_h else 1.0
 
-    The focal point is centered in the output frame (clamped at the edges).
-    Large sources: take a 1:1 crop of the target size. Small sources: scale
-    up just enough to cover the frame. `max_zoom` is unused (kept for callers).
+    max_half_w = min(fx, orig_w - fx)
+    max_half_h = min(fy, orig_h - fy)
+    h_fit = 2.0 * min(max_half_h, max_half_w / aspect)
+    h_fit = max(1.0, min(h_fit, orig_h))
+    w_fit = h_fit * aspect
+    if w_fit > orig_w:
+        w_fit = orig_w
+        h_fit = w_fit / aspect
+
+    cover = max(target_w / orig_w, target_h / orig_h)
+    s0 = max(1.0, cover)
+    s_fit = max(target_w / w_fit, target_h / h_fit)
+    crop_scale = clamp_crop_scale(crop_scale)
+    s_req = s0 / crop_scale
+    s_max = s0 / MIN_CROP_SCALE
+    s_req = max(s0 / MAX_CROP_SCALE, min(s_req, s_max))
+    s_eff = max(s_req, s_fit)
+    return fx, fy, s_req, s_eff, w_fit, h_fit
+
+
+def compute_crop_frame(focal_x, focal_y, orig_w, orig_h, target_w, target_h,
+                       max_zoom=DEFAULT_MAX_ZOOM, crop_scale=DEFAULT_CROP_SCALE):
+    """Return requested (x, y, w, h) centered on focal — may extend outside the image.
+
+    Used by the Original overlay so wheel zoom always moves the white box.
+    `max_zoom` is unused (kept for callers).
     """
     del max_zoom
     orig_w = float(orig_w)
     orig_h = float(orig_h)
     target_w = float(target_w)
     target_h = float(target_h)
-    cover = max(target_w / orig_w, target_h / orig_h) if orig_w and orig_h else 1.0
-    scale = max(cover, 1.0)
-    w = min(orig_w, max(1.0, target_w / scale))
-    h = min(orig_h, max(1.0, target_h / scale))
-    fx = max(0.0, min(float(focal_x), orig_w))
-    fy = max(0.0, min(float(focal_y), orig_h))
-    x = min(max(fx - w / 2, 0.0), orig_w - w)
-    y = min(max(fy - h / 2, 0.0), orig_h - h)
+    if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
+        return (0, 0, 1, 1)
+
+    fx, fy, s_req, _s_eff, _w_fit, _h_fit = _crop_scales(
+        focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale,
+    )
+    w = max(1.0, target_w / s_req)
+    h = max(1.0, target_h / s_req)
+    x = fx - w / 2.0
+    y = fy - h / 2.0
     return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
 
 
-def render_aligned(img, focal, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
+def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h,
+                 max_zoom=DEFAULT_MAX_ZOOM, crop_scale=DEFAULT_CROP_SCALE):
+    """Return effective in-bounds (x, y, w, h) crop for Preview/export.
+
+    Always centered on the focal. Large sources default to a 1:1 target-sized
+    crop at crop_scale=1. When the requested frame (see compute_crop_frame)
+    would leave the image, the sample shrinks to the largest centered
+    target-aspect rect and render_aligned upscales it — never slides along an
+    edge. `max_zoom` is unused (kept for callers).
+    """
+    del max_zoom
+    orig_w = float(orig_w)
+    orig_h = float(orig_h)
+    target_w = float(target_w)
+    target_h = float(target_h)
+    if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
+        return (0, 0, 1, 1)
+
+    fx, fy, _s_req, s_eff, w_fit, h_fit = _crop_scales(
+        focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale,
+    )
+    w = max(1.0, target_w / s_eff)
+    h = max(1.0, target_h / s_eff)
+    if w > w_fit + 1e-6 or h > h_fit + 1e-6:
+        w, h = w_fit, h_fit
+
+    x = fx - w / 2.0
+    y = fy - h / 2.0
+    # Numerical safety — size is already capped to stay centered in-bounds.
+    x = min(max(x, 0.0), max(0.0, orig_w - w))
+    y = min(max(y, 0.0), max(0.0, orig_h - h))
+    return (int(round(x)), int(round(y)), int(round(w)), int(round(h)))
+
+
+def render_aligned(img, focal, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM,
+                   crop_scale=DEFAULT_CROP_SCALE):
     """Render one image to exactly (target_h, target_w).
 
     Crops around the focal point, then scales to the target size. Small
@@ -119,7 +211,9 @@ def render_aligned(img, focal, target_w, target_h, max_zoom=DEFAULT_MAX_ZOOM):
     if focal is None:
         focal = (w / 2, h / 2)
     fx, fy = focal
-    x, y, cw, ch = compute_crop(fx, fy, w, h, target_w, target_h, max_zoom)
+    x, y, cw, ch = compute_crop(
+        fx, fy, w, h, target_w, target_h, max_zoom, crop_scale=crop_scale,
+    )
     region = img[y:y + ch, x:x + cw]
     aligned = cv2.resize(region, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
     return aligned, False
@@ -360,6 +454,7 @@ class FocalPointAlignerCore:
         self.focal_points = {}
         self.completed = set()
         self.auto_center_flags = {}
+        self.crop_scales = {}
         
         self.preview_dirty = set()
         self._cancel_preview_generation = False
@@ -425,6 +520,8 @@ class FocalPointAlignerCore:
                                 self.focal_points[idx] = (coords.get("focal_x", 0), coords.get("focal_y", 0))
                                 self.image_dimensions[idx] = (coords.get("original_width", 0), coords.get("original_height", 0))
                                 self.auto_center_flags[idx] = coords.get("auto_center", False)
+                                if "crop_scale" in coords:
+                                    self.crop_scales[idx] = clamp_crop_scale(coords.get("crop_scale"))
                             elif isinstance(coords, list) and len(coords) >= 4:
                                 self.focal_points[idx] = (coords[0], coords[1])
                                 self.image_dimensions[idx] = (coords[2], coords[3])
@@ -482,6 +579,7 @@ class FocalPointAlignerCore:
         new_completed = set()
         new_auto_center = {}
         new_dimensions = {}
+        new_crop_scales = {}
         for new_idx, img_file in enumerate(ordered):
             old_idx = old_name_to_idx[img_file.name]
             if old_idx in self.focal_points:
@@ -492,12 +590,15 @@ class FocalPointAlignerCore:
                 new_auto_center[new_idx] = self.auto_center_flags[old_idx]
             if old_idx in self.image_dimensions:
                 new_dimensions[new_idx] = self.image_dimensions[old_idx]
+            if old_idx in self.crop_scales:
+                new_crop_scales[new_idx] = self.crop_scales[old_idx]
         
         self.image_files = ordered
         self.focal_points = new_focal
         self.completed = new_completed
         self.auto_center_flags = new_auto_center
         self.image_dimensions = new_dimensions
+        self.crop_scales = new_crop_scales
         logger.info(f"[ALIGNER _reorder_files_by_names] Reordered to {[f.name[:20] for f in ordered[:5]]}...")
     
     def _validate_and_discard_images(self):
@@ -558,6 +659,8 @@ class FocalPointAlignerCore:
             self.completed.discard(idx)
             if idx in self.auto_center_flags:
                 del self.auto_center_flags[idx]
+            if idx in self.crop_scales:
+                del self.crop_scales[idx]
         
         data = {"_meta": {
             "version": JSON_VERSION,
@@ -574,14 +677,16 @@ class FocalPointAlignerCore:
                 filename = self.image_files[idx].name
                 dims = self.image_dimensions.get(idx, (0, 0))
                 auto_center = self.auto_center_flags.get(idx, False)
-                data[filename] = {
+                entry = {
                     "focal_x": focal[0],
                     "focal_y": focal[1],
                     "original_width": dims[0],
                     "original_height": dims[1],
                     "auto_center": auto_center,
+                    "crop_scale": clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE)),
                     "timestamp": datetime.now().isoformat()
                 }
+                data[filename] = entry
         
         if self.alignment_mode:
             data["alignment_mode"] = self.alignment_mode
@@ -693,6 +798,7 @@ class FocalPointAlignerCore:
                 "completed": i in self.completed,
                 "auto_center": bool(self.auto_center_flags.get(i, False)),
                 "focal_at_center": self.is_focal_at_center_idx(i),
+                "crop_scale": clamp_crop_scale(self.crop_scales.get(i, DEFAULT_CROP_SCALE)) if focal else DEFAULT_CROP_SCALE,
             })
         return {
             "images": images,
@@ -721,10 +827,12 @@ class FocalPointAlignerCore:
         else:
             tw, th = self.target_width, self.target_height
         x, y, cw, ch = compute_crop(
-            focal[0], focal[1], w, h, tw, th, self.max_zoom
+            focal[0], focal[1], w, h, tw, th, self.max_zoom,
+            crop_scale=self.crop_scales.get(idx, DEFAULT_CROP_SCALE),
         )
         return {"x": x, "y": y, "w": cw, "h": ch, "orig_w": w, "orig_h": h,
-                "target_w": tw, "target_h": th, "focal": [focal[0], focal[1]]}
+                "target_w": tw, "target_h": th, "focal": [focal[0], focal[1]],
+                "crop_scale": clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE))}
 
     def export_aligned(self, output_folder, orientation="landscape", progress_callback=None):
         """Write aligned JPEGs to output_folder as {idx:04d}.jpg. GUI export path."""
@@ -802,12 +910,16 @@ class FocalPointAlignerCore:
             return cv2.imread(str(preview_path))
         return None
     
-    def set_focal_point(self, x, y, auto_center=False):
+    def set_focal_point(self, x, y, auto_center=False, crop_scale=None):
         """Set focal point for current image (in original image coordinates)."""
         self._ensure_dims(self.current_idx)
         
         self.focal_points[self.current_idx] = (float(x), float(y))
         self.auto_center_flags[self.current_idx] = auto_center
+        if crop_scale is not None:
+            self.crop_scales[self.current_idx] = clamp_crop_scale(crop_scale)
+        elif self.current_idx not in self.crop_scales:
+            self.crop_scales[self.current_idx] = DEFAULT_CROP_SCALE
         self.completed.add(self.current_idx)
         
         with self._preview_generation_lock:
@@ -828,6 +940,8 @@ class FocalPointAlignerCore:
             del self.focal_points[self.current_idx]
         if self.current_idx in self.auto_center_flags:
             del self.auto_center_flags[self.current_idx]
+        if self.current_idx in self.crop_scales:
+            del self.crop_scales[self.current_idx]
         if self.current_idx in self.completed:
             self.completed.remove(self.current_idx)
         self.save_focal_points()
@@ -1066,6 +1180,7 @@ class FocalPointAlignerCore:
             aligned, _ = render_aligned(
                 img, focal, target_w, target_h,
                 max_zoom=self.max_zoom,
+                crop_scale=self.crop_scales.get(idx, DEFAULT_CROP_SCALE),
             )
             
             output_folder = Path(output_folder)
@@ -1234,6 +1349,7 @@ class FocalPointAlignerCore:
         new_completed = set()
         new_auto_center = {}
         new_dimensions = {}
+        new_crop_scales = {}
         
         for old_idx, focal in self.focal_points.items():
             new_idx = old_to_new.get(old_idx, old_idx)
@@ -1250,11 +1366,16 @@ class FocalPointAlignerCore:
         for old_idx, dims in self.image_dimensions.items():
             new_idx = old_to_new.get(old_idx, old_idx)
             new_dimensions[new_idx] = dims
+
+        for old_idx, scale in self.crop_scales.items():
+            new_idx = old_to_new.get(old_idx, old_idx)
+            new_crop_scales[new_idx] = scale
         
         self.focal_points = new_focal
         self.completed = new_completed
         self.auto_center_flags = new_auto_center
         self.image_dimensions = new_dimensions
+        self.crop_scales = new_crop_scales
         
         old_current = self.current_idx
         self.current_idx = old_to_new.get(old_current, old_current)
@@ -1275,6 +1396,26 @@ class FocalPointAlignerCore:
             else:
                 new_focal[idx] = focal
         self.focal_points = new_focal
+        
+        new_auto = {}
+        for idx, flag in self.auto_center_flags.items():
+            if idx == i:
+                new_auto[j] = flag
+            elif idx == j:
+                new_auto[i] = flag
+            else:
+                new_auto[idx] = flag
+        self.auto_center_flags = new_auto
+
+        new_scales = {}
+        for idx, scale in self.crop_scales.items():
+            if idx == i:
+                new_scales[j] = scale
+            elif idx == j:
+                new_scales[i] = scale
+            else:
+                new_scales[idx] = scale
+        self.crop_scales = new_scales
         
         new_completed = set()
         for idx in self.completed:
@@ -1332,6 +1473,7 @@ class FocalPointAlignerCore:
         self.focal_points = _shift_dict(self.focal_points)
         self.auto_center_flags = _shift_dict(self.auto_center_flags)
         self.image_dimensions = _shift_dict(self.image_dimensions)
+        self.crop_scales = _shift_dict(self.crop_scales)
         self.completed = _shift_set(self.completed)
         self.preview_dirty = _shift_set(self.preview_dirty)
         
@@ -1356,6 +1498,7 @@ class FocalPointAlignerCore:
         new_completed = set()
         new_auto_center = {}
         new_dimensions = {}
+        new_crop_scales = {}
         
         for new_pos, orig_idx in enumerate(display_order):
             if orig_idx in self.focal_points:
@@ -1366,6 +1509,8 @@ class FocalPointAlignerCore:
                 new_auto_center[new_pos] = self.auto_center_flags[orig_idx]
             if orig_idx in self.image_dimensions:
                 new_dimensions[new_pos] = self.image_dimensions[orig_idx]
+            if orig_idx in self.crop_scales:
+                new_crop_scales[new_pos] = self.crop_scales[orig_idx]
         
         old_order = [i for i in range(len(self.image_files))]
         if display_order != old_order:
@@ -1375,6 +1520,7 @@ class FocalPointAlignerCore:
             self.completed = new_completed
             self.auto_center_flags = new_auto_center
             self.image_dimensions = new_dimensions
+            self.crop_scales = new_crop_scales
             self.current_idx = old_to_new.get(self.current_idx, 0)
             self.preview_dirty = {
                 old_to_new[idx] for idx in self.preview_dirty if idx in old_to_new
@@ -1466,6 +1612,7 @@ class FocalPointAlignerCore:
             del self.focal_points[idx]
         self.completed.clear()
         self.auto_center_flags.clear()
+        self.crop_scales.clear()
         
         if self.json_path.exists():
             self.json_path.unlink()
