@@ -2,7 +2,15 @@ import math
 
 import numpy as np
 
-from aligner_core import compute_crop, compute_crop_frame, crop_to_widget, render_aligned
+from aligner_core import (
+    MIN_CROP_SCALE,
+    bake_crop_scale,
+    clamp_crop_scale,
+    compute_crop,
+    compute_crop_frame,
+    crop_to_widget,
+    render_aligned,
+)
 
 
 def test_crop_to_widget_mapping():
@@ -184,3 +192,28 @@ def test_render_aligned_puts_focal_at_center():
         x, y, w, h = _run(fx, fy, 12000, 8000)
         assert all(math.isfinite(v) for v in (x, y, w, h))
         assert x >= 0 and y >= 0 and x + w <= 12000 and y + h <= 8000
+
+
+def test_min_crop_scale_allows_deep_zoom_in():
+    assert MIN_CROP_SCALE <= 0.05
+    _, _, w0, _ = compute_crop(6000, 4000, 12000, 8000, 2560, 1440, crop_scale=1.0)
+    _, _, w1, _ = compute_crop(6000, 4000, 12000, 8000, 2560, 1440, crop_scale=0.05)
+    assert w1 < w0
+    assert w1 < 2560 * 0.1  # much tighter than base 1:1 framing
+    assert clamp_crop_scale(0.01) == MIN_CROP_SCALE
+
+
+def test_bake_crop_scale_preserves_edge_forced_zoom():
+    """Near-edge cover forces zoom; baking stores it so center keeps that crop size."""
+    ow, oh, tw, th = 12000, 8000, 2560, 1440
+    edge_fx, edge_fy = 80, 4000
+    center_fx, center_fy = 6000, 4000
+    baked = bake_crop_scale(edge_fx, edge_fy, ow, oh, tw, th, 1.0)
+    assert baked < 1.0 - 1e-6
+    _, _, w_edge, _ = compute_crop(edge_fx, edge_fy, ow, oh, tw, th, crop_scale=1.0)
+    _, _, w_baked_center, _ = compute_crop(
+        center_fx, center_fy, ow, oh, tw, th, crop_scale=baked,
+    )
+    assert abs(w_baked_center - w_edge) <= 2
+    # Center at crop_scale=1 should not bake (no forced zoom).
+    assert bake_crop_scale(center_fx, center_fy, ow, oh, tw, th, 1.0) == 1.0

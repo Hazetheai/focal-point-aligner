@@ -189,3 +189,64 @@ def test_export_writes_numbered_jpegs(client, tmp_path):
     assert "complete" in body
     assert (dest / "0000.jpg").exists()
     assert (dest / "0001.jpg").exists()
+
+
+def test_focal_points_json_lives_in_input(client, tmp_path):
+    src = _imgs(tmp_path, 2)
+    out = tmp_path / "out"
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(out),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    client.post("/focal", json={"x": 10, "y": 10, "index": 0})
+    assert (src / "focal_points.json").exists()
+    assert not (out / "focal_points.json").exists()
+
+
+def test_export_cleanup_keeps_input_json(client, tmp_path):
+    src = _imgs(tmp_path, 1)
+    out = tmp_path / "out"
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(out),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    client.post("/focal", json={"x": 20, "y": 20, "index": 0})
+    assert (src / "focal_points.json").exists()
+    dest = tmp_path / "export"
+    r = client.post("/export", json={"output_folder": str(dest), "orientation": "landscape", "cleanup": True})
+    assert r.status_code == 200
+    assert "complete" in r.text
+    assert (src / "focal_points.json").exists()
+
+
+def test_duplicate_inserts_after_current(client, tmp_path):
+    src = _imgs(tmp_path, 2)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    client.post("/focal", json={"x": 55, "y": 44, "auto_center": False, "crop_scale": 1.5, "index": 0})
+    before = client.get("/session").json()
+    assert before["total"] == 2
+    assert before["current_idx"] == 0
+    name0 = before["images"][0]["filename"]
+    r = client.post("/duplicate")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] == 3
+    assert data["current_idx"] == 1
+    assert data["images"][0]["filename"] == name0
+    dup = data["images"][1]
+    assert "__dup" in dup["filename"]
+    assert (src / dup["filename"]).exists()
+    assert abs(dup["crop_scale"] - 1.5) < 1e-6
+    assert dup["focal"][0] == 55
+    assert dup["focal"][1] == 44
+    assert data["images"][2]["filename"] == before["images"][1]["filename"]
+    assert (src / "focal_points.json").exists()

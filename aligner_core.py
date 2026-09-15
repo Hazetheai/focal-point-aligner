@@ -12,6 +12,7 @@ import threading
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 import cv2
 
@@ -38,7 +39,7 @@ THUMB_MAX = 512
 CACHE_DIR_NAME = ".fpa_cache"
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
 DEFAULT_CROP_SCALE = 1.0
-MIN_CROP_SCALE = 0.25   # zoom in vs base framing
+MIN_CROP_SCALE = 0.05   # zoom in vs base framing (~20×)
 MAX_CROP_SCALE = 8.0    # zoom out (clamped by image bounds)
 
 
@@ -115,7 +116,7 @@ def calculate_transformation(focal_x, focal_y, orig_w, orig_h, target_w, target_
 
 
 def _crop_scales(focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale):
-    """Return (fx, fy, s_req, s_eff, w_fit, h_fit) for framing helpers."""
+    """Return (fx, fy, s0, s_req, s_eff, w_fit, h_fit) for framing helpers."""
     eps = 1e-6
     fx = max(eps, min(float(focal_x), orig_w - eps))
     fy = max(eps, min(float(focal_y), orig_h - eps))
@@ -138,7 +139,24 @@ def _crop_scales(focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scal
     s_max = s0 / MIN_CROP_SCALE
     s_req = max(s0 / MAX_CROP_SCALE, min(s_req, s_max))
     s_eff = max(s_req, s_fit)
-    return fx, fy, s_req, s_eff, w_fit, h_fit
+    return fx, fy, s0, s_req, s_eff, w_fit, h_fit
+
+
+def bake_crop_scale(focal_x, focal_y, orig_w, orig_h, target_w, target_h,
+                    crop_scale=DEFAULT_CROP_SCALE):
+    """Bake edge-forced magnification into crop_scale when s_eff > s_req."""
+    orig_w = float(orig_w)
+    orig_h = float(orig_h)
+    target_w = float(target_w)
+    target_h = float(target_h)
+    if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
+        return clamp_crop_scale(crop_scale)
+    _fx, _fy, s0, s_req, s_eff, _w_fit, _h_fit = _crop_scales(
+        focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale,
+    )
+    if s_eff <= s_req + 1e-9:
+        return clamp_crop_scale(crop_scale)
+    return clamp_crop_scale(s0 / s_eff)
 
 
 def compute_crop_frame(focal_x, focal_y, orig_w, orig_h, target_w, target_h,
@@ -156,7 +174,7 @@ def compute_crop_frame(focal_x, focal_y, orig_w, orig_h, target_w, target_h,
     if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
         return (0, 0, 1, 1)
 
-    fx, fy, s_req, _s_eff, _w_fit, _h_fit = _crop_scales(
+    fx, fy, _s0, s_req, _s_eff, _w_fit, _h_fit = _crop_scales(
         focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale,
     )
     w = max(1.0, target_w / s_req)
@@ -184,7 +202,7 @@ def compute_crop(focal_x, focal_y, orig_w, orig_h, target_w, target_h,
     if orig_w <= 0 or orig_h <= 0 or target_w <= 0 or target_h <= 0:
         return (0, 0, 1, 1)
 
-    fx, fy, _s_req, s_eff, w_fit, h_fit = _crop_scales(
+    fx, fy, _s0, _s_req, s_eff, w_fit, h_fit = _crop_scales(
         focal_x, focal_y, orig_w, orig_h, target_w, target_h, crop_scale,
     )
     w = max(1.0, target_w / s_eff)
@@ -266,14 +284,60 @@ def _apply_exif_orientation(img, orientation):
     return img
 
 
+def _to_uint8_bgr(img):
+    """Normalize OpenCV image arrays to 8-bit BGR for JPEG preview/export."""
+    if img is None or not getattr(img, "size", 0):
+        return None
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    elif img.ndim == 3:
+        channels = img.shape[2]
+        if channels == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        elif channels == 2:
+            img = cv2.cvtColor(img[:, :, 0], cv2.COLOR_GRAY2BGR)
+        elif channels != 3:
+            return None
+    else:
+        return None
+
+    if img.dtype == np.uint8:
+        return img
+
+    arr = img.astype(np.float32, copy=False)
+    maxv = float(arr.max()) if arr.size else 0.0
+    if maxv <= 0:
+        return np.zeros(img.shape[:2] + (3,), dtype=np.uint8)
+
+    if np.issubdtype(img.dtype, np.floating):
+        scale = 255.0 if maxv <= 1.0 + 1e-6 else (255.0 / maxv)
+    else:
+        # 10/12/14/16-bit payloads often live in uint16 containers.
+        if maxv <= 255:
+            scale = 1.0
+        elif maxv <= 1023:
+            scale = 255.0 / 1023.0
+        elif maxv <= 4095:
+            scale = 255.0 / 4095.0
+        elif maxv <= 16383:
+            scale = 255.0 / 16383.0
+        else:
+            scale = 255.0 / 65535.0
+    return np.clip(arr * scale, 0, 255).astype(np.uint8)
+
+
 def load_image_safely(img_path):
-    """Load an image using OpenCV, with PIL fallback. Honors EXIF orientation."""
+    """Load an image using OpenCV, with PIL fallback. Honors EXIF orientation.
+
+    Always returns 8-bit BGR (or None). High-bit-depth sources are scaled down
+    so preview/export JPEGs are not clipped to near-white.
+    """
     orientation = _exif_orientation(img_path)
     img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
     if img is not None and img.size > 0:
-        if img.ndim == 3 and img.shape[2] == 4:
-            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-        return _apply_exif_orientation(img, orientation), "opencv"
+        img = _to_uint8_bgr(img)
+        if img is not None:
+            return _apply_exif_orientation(img, orientation), "opencv"
 
     if not PIL_AVAILABLE:
         return None, "failed"
@@ -417,7 +481,14 @@ class FocalPointAlignerCore:
         self.preview_landscape_folder = self.preview_cache_folder
         self.preview_portrait_folder = self.preview_cache_folder
         
-        self.json_path = self.output_folder / "focal_points.json"
+        self.json_path = self.input_folder / "focal_points.json"
+        legacy_json = self.output_folder / "focal_points.json"
+        # One-time migrate: older sessions wrote focals next to aligned output.
+        if not self.json_path.exists() and legacy_json.exists():
+            try:
+                shutil.copy2(legacy_json, self.json_path)
+            except Exception as e:
+                logger.warning(f"Could not migrate focal_points.json from output: {e}")
         
         self.alignment_mode = None
         self.preview_state = {}
@@ -459,8 +530,18 @@ class FocalPointAlignerCore:
         self.preview_dirty = set()
         self._cancel_preview_generation = False
         self._preview_generation_lock = threading.Lock()
+
+        # Arrangement history: "original" + "1".."9" filename lists
+        self.arrangements = {}
+        self.arrangement_active = "original"
+        self.arrangement_reversed = {}  # slot -> bool (Reverse button lit state)
+        self._arrange_draft = None  # pending manual order while on Arrange tab
         
         self.load_focal_points()
+
+        if "original" not in self.arrangements:
+            self.arrangements["original"] = [f.name for f in self.image_files]
+            self.arrangement_active = "original"
         
         if self.image_files:
             for idx, img_file in enumerate(self.image_files):
@@ -501,13 +582,29 @@ class FocalPointAlignerCore:
                 
                 if "discarded" in data:
                     self.discarded = set(data["discarded"])
-                
+
+                if "arrangements" in data and isinstance(data["arrangements"], dict):
+                    self.arrangements = {
+                        str(k): list(v) for k, v in data["arrangements"].items()
+                        if isinstance(v, list)
+                    }
+                if "arrangement_active" in data:
+                    self.arrangement_active = str(data["arrangement_active"])
+                if "arrangement_reversed" in data and isinstance(data["arrangement_reversed"], dict):
+                    self.arrangement_reversed = {
+                        str(k): bool(v) for k, v in data["arrangement_reversed"].items()
+                    }
+
                 if "current_idx" in data:
                     self.current_idx = data["current_idx"]
                     self._current_idx_loaded = True
                 
-                focal_data = {k: v for k, v in data.items() 
-                              if k not in ["alignment_mode", "preview_state", "discarded", "current_idx", "order", "_meta"]}
+                skip_keys = {
+                    "alignment_mode", "preview_state", "discarded", "current_idx",
+                    "order", "_meta", "arrangements", "arrangement_active",
+                    "arrangement_reversed",
+                }
+                focal_data = {k: v for k, v in data.items() if k not in skip_keys}
                 
                 existing_files = {f.name for f in self.image_files}
                 
@@ -696,12 +793,155 @@ class FocalPointAlignerCore:
         
         if self.discarded:
             data["discarded"] = list(self.discarded)
+
+        if self.arrangements:
+            data["arrangements"] = self.arrangements
+        if self.arrangement_active:
+            data["arrangement_active"] = self.arrangement_active
+        if self.arrangement_reversed:
+            data["arrangement_reversed"] = {
+                k: bool(v) for k, v in self.arrangement_reversed.items() if v
+            }
         
         try:
             with open(self.json_path, 'w') as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.warning(f"Warning: Could not save focal points: {e}")
+    
+    def set_target_size(self, width, height):
+        """Update export/crop target size and mark all previews dirty."""
+        self.target_width = max(1, int(width))
+        self.target_height = max(1, int(height))
+        self.preview_dirty = set(range(len(self.image_files)))
+        # Drop cached preview JPEGs so next ensure regenerates at new size
+        try:
+            if self.preview_cache_folder and self.preview_cache_folder.exists():
+                for f in self.preview_cache_folder.glob("*.jpg"):
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        self.save_focal_points()
+        return True
+
+    def current_order_names(self):
+        return [f.name for f in self.image_files]
+
+    def _names_to_order(self, names):
+        """Map filename list → display_order (new_pos → old_index)."""
+        by_name = {f.name: i for i, f in enumerate(self.image_files)}
+        if set(names) != set(by_name):
+            # Allow partial: keep only known names, append missing at end
+            ordered_idx = [by_name[n] for n in names if n in by_name]
+            missing = [i for i in range(len(self.image_files)) if self.image_files[i].name not in set(names)]
+            return ordered_idx + missing
+        return [by_name[n] for n in names]
+
+    def recall_arrangement(self, slot: str):
+        slot = str(slot)
+        if slot == "0":
+            slot = "original"
+        names = self.arrangements.get(slot)
+        if not names:
+            return False
+        order = self._names_to_order(names)
+        ok = self.apply_arrange_order(order, mark_draft=False)
+        if ok:
+            self.arrangement_active = slot
+            self._arrange_draft = None
+            self.save_focal_points()
+        return ok
+
+    def save_arrangement_slot(self, slot: str, names=None):
+        slot = str(slot)
+        if slot == "0":
+            slot = "original"
+        if slot != "original" and slot not in {str(i) for i in range(1, 10)}:
+            return False
+        self.arrangements[slot] = list(names if names is not None else self.current_order_names())
+        self.arrangement_active = slot
+        self.arrangement_reversed[slot] = False
+        self._arrange_draft = None
+        self.save_focal_points()
+        return True
+
+    def mark_arrange_draft(self):
+        """Record that manual arrange edits are pending (committed on leave)."""
+        self._arrange_draft = self.current_order_names()
+
+    def reverse_arrangement_in_place(self):
+        """Reverse current order and update the active slot; do not create a new preset."""
+        n = len(self.image_files)
+        if n < 2:
+            return True
+        order = list(range(n - 1, -1, -1))
+        if not self.apply_arrange_order(order, mark_draft=False):
+            return False
+        active = self.arrangement_active or "original"
+        self.arrangements[active] = self.current_order_names()
+        self.arrangement_reversed[active] = not bool(self.arrangement_reversed.get(active, False))
+        self._arrange_draft = None
+        self.save_focal_points()
+        return True
+
+    def commit_arrange_draft_to_next_slot(self):
+        """When leaving Arrange, batch manual edits into the next free 1-9 slot."""
+        if not self._arrange_draft:
+            return None
+        names = self.current_order_names()
+        if names == self.arrangements.get(self.arrangement_active):
+            self._arrange_draft = None
+            return None
+        # Prefer overwrite active numeric slot, else next free, else slot 1
+        active = self.arrangement_active
+        if active in {str(i) for i in range(1, 10)}:
+            slot = active
+        else:
+            slot = next((str(i) for i in range(1, 10) if str(i) not in self.arrangements), "1")
+        self.save_arrangement_slot(slot, names)
+        return slot
+
+    def auto_arrange(self, mode: str, options: Optional[dict] = None, progress_callback=None):
+        """Run an AutoArrange mode and save into a slot. Returns (ok, slot|error)."""
+        options = options or {}
+        paths = list(self.image_files)
+        from arrange_auto import (
+            sort_indices_by_color,
+            sort_indices_by_depth,
+            lead_match_sort,
+            sort_indices_by_faces,
+        )
+        labels = None
+        if mode == "color":
+            order, labels = sort_indices_by_color(paths, progress=progress_callback)
+        elif mode == "depth":
+            order = sort_indices_by_depth(
+                paths,
+                near_to_far=bool(options.get("near_to_far", True)),
+                progress=progress_callback,
+            )
+        elif mode == "lead":
+            order = lead_match_sort(
+                paths,
+                lead_index=int(options.get("lead_index", self.current_idx)),
+                roi=options.get("roi"),
+                axis=str(options.get("axis", "x")),
+                progress=progress_callback,
+            )
+        elif mode == "faces":
+            order = sort_indices_by_faces(paths, progress=progress_callback)
+        else:
+            return False, f"Unknown mode: {mode}"
+        if not self.apply_arrange_order(order, mark_draft=False):
+            return False, "apply_arrange_order failed"
+        slot = str(options.get("slot") or next(
+            (str(i) for i in range(1, 10) if str(i) not in self.arrangements), "1"
+        ))
+        self.save_arrangement_slot(slot)
+        return True, {"slot": slot, "labels": labels}
     
     def delete_focal_points_file(self):
         """Delete the focal points JSON file."""
@@ -710,6 +950,94 @@ class FocalPointAlignerCore:
                 self.json_path.unlink()
             except Exception as e:
                 logger.warning(f"Warning: Could not delete focal points file: {e}")
+
+    def _unique_duplicate_path(self, src: Path) -> Path:
+        """Return input_folder / '{stem}__dup{n?}{suffix}' that does not exist yet."""
+        stem = src.stem
+        suffix = src.suffix
+        candidate = self.input_folder / f"{stem}__dup{suffix}"
+        n = 2
+        while candidate.exists():
+            candidate = self.input_folder / f"{stem}__dup{n}{suffix}"
+            n += 1
+        return candidate
+
+    def duplicate_current(self):
+        """Copy current image on disk and insert it after current_idx with the same settings.
+
+        Returns (ok, error_message|None).
+        """
+        if not (0 <= self.current_idx < len(self.image_files)):
+            return False, "No current image"
+        src = self.image_files[self.current_idx]
+        if not src.is_file():
+            return False, f"Missing file: {src.name}"
+        try:
+            dest = self._unique_duplicate_path(src)
+            shutil.copy2(src, dest)
+        except Exception as e:
+            return False, f"Could not copy image: {e}"
+
+        insert_at = self.current_idx + 1
+        src_idx = self.current_idx
+
+        def _insert_dict(d, default=None):
+            out = {}
+            for idx, val in d.items():
+                if idx < insert_at:
+                    out[idx] = val
+                else:
+                    out[idx + 1] = val
+            if src_idx in d:
+                out[insert_at] = d[src_idx]
+            elif default is not None:
+                out[insert_at] = default
+            return out
+
+        def _insert_set(s):
+            out = set()
+            for idx in s:
+                if idx < insert_at:
+                    out.add(idx)
+                else:
+                    out.add(idx + 1)
+            if src_idx in s:
+                out.add(insert_at)
+            return out
+
+        self.image_files.insert(insert_at, dest)
+        self.focal_points = _insert_dict(self.focal_points)
+        self.auto_center_flags = _insert_dict(self.auto_center_flags)
+        self.crop_scales = _insert_dict(self.crop_scales)
+        self.image_dimensions = _insert_dict(self.image_dimensions)
+        self.completed = _insert_set(self.completed)
+        self.preview_dirty = _insert_set(self.preview_dirty)
+        self.preview_dirty.add(insert_at)
+
+        # Copy header meta under the new filename if known
+        if src.name in self.image_meta:
+            self.image_meta[dest.name] = dict(self.image_meta[src.name])
+        else:
+            meta = probe_image_meta(dest)
+            if meta:
+                self.image_meta[dest.name] = meta
+                self.image_dimensions[insert_at] = (meta["width"], meta["height"])
+
+        # Insert into arrangement filename lists after the source name
+        for slot, names in list(self.arrangements.items()):
+            if not isinstance(names, list):
+                continue
+            try:
+                pos = names.index(src.name)
+            except ValueError:
+                continue
+            names = list(names)
+            names.insert(pos + 1, dest.name)
+            self.arrangements[slot] = names
+
+        self.current_idx = insert_at
+        self.save_focal_points()
+        return True, None
 
     def _ensure_dims(self, idx):
         """Return (w, h) for idx, probing the file header if unknown."""
@@ -729,7 +1057,8 @@ class FocalPointAlignerCore:
         return self.thumb_folder / f"{Path(img_file).stem}.jpg"
 
     def preview_path(self, img_file, orientation="landscape"):
-        return self.preview_cache_folder / f"{Path(img_file).stem}_{orientation}.jpg"
+        # `_u8` suffix invalidates previews written before uint8 normalization.
+        return self.preview_cache_folder / f"{Path(img_file).stem}_{orientation}_u8.jpg"
 
     def ensure_thumbnail(self, idx):
         """Write a ~512px JPEG thumb for idx if missing. Returns path or None."""
@@ -812,6 +1141,14 @@ class FocalPointAlignerCore:
             "stats": self.get_stats(),
             "total": self.total_images,
             "completed_count": self.completed_count,
+            "arrangements": {
+                k: list(v) for k, v in (self.arrangements or {}).items()
+            },
+            "arrangement_active": self.arrangement_active or "original",
+            "arrangement_reversed": bool(
+                (self.arrangement_reversed or {}).get(self.arrangement_active or "original", False)
+            ),
+            "arrangement_slots": ["original"] + [str(i) for i in range(1, 10)],
         }
 
     def crop_for(self, idx, orientation=None):
@@ -1485,7 +1822,7 @@ class FocalPointAlignerCore:
         self.save_focal_points()
         logger.info(f"[ALIGNER discard_current] DONE: current_idx={self.current_idx}, total_images={len(self.image_files)}")
     
-    def apply_arrange_order(self, display_order):
+    def apply_arrange_order(self, display_order, mark_draft=True):
         """Apply display order (list mapping new position -> original index) to image_files and all dictionaries."""
         if len(display_order) != len(self.image_files):
             logger.warning(f"[ALIGNER apply_arrange_order] Length mismatch: {len(display_order)} vs {len(self.image_files)}")
@@ -1525,6 +1862,8 @@ class FocalPointAlignerCore:
             self.preview_dirty = {
                 old_to_new[idx] for idx in self.preview_dirty if idx in old_to_new
             }
+            if mark_draft:
+                self.mark_arrange_draft()
             
             logger.info(f"[ALIGNER apply_arrange_order] DONE, new order: {[f.name[:20] for f in self.image_files[:5]]}")
             return True

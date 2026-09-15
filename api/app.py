@@ -109,6 +109,47 @@ class FolderDialogBody(BaseModel):
     title: Optional[str] = "Select folder"
 
 
+class FileDialogBody(BaseModel):
+    title: Optional[str] = "Select file"
+    types: Optional[list[str]] = None  # e.g. ["txt"]
+
+
+class TargetBody(BaseModel):
+    target_width: int
+    target_height: int
+
+
+class ImportDownloadBody(BaseModel):
+    dest: str
+    name: Optional[str] = None
+    urls: Optional[list[str]] = None
+    url_file: Optional[str] = None
+    url_folder: Optional[str] = None
+    force: bool = False
+
+
+class ArrangeAutoBody(BaseModel):
+    mode: str  # color | depth | lead | faces
+    slot: Optional[str] = None
+    near_to_far: bool = True
+    lead_index: Optional[int] = None
+    axis: str = "x"
+    roi: Optional[list[float]] = None
+
+
+class ArrangeSlotBody(BaseModel):
+    slot: str
+    order_names: Optional[list[str]] = None
+
+
+class ArrangeRecallBody(BaseModel):
+    slot: str
+
+
+class ArrangeLeaveBody(BaseModel):
+    commit: bool = True
+
+
 def pick_folder_dialog(title: str = "Select folder") -> Optional[str]:
     """Open a native folder-only picker. Returns an absolute path, or None if cancelled."""
     system = platform.system()
@@ -168,6 +209,60 @@ def pick_folder_dialog(title: str = "Select folder") -> Optional[str]:
     return None
 
 
+def pick_file_dialog(title: str = "Select file", types: Optional[list[str]] = None) -> Optional[str]:
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            if types:
+                type_list = ", ".join(f'"{t}"' for t in types)
+                type_clause = f" of type {{{type_list}}}"
+            else:
+                type_clause = ""
+            script = (
+                f'POSIX path of (choose file with prompt "{title.replace(chr(34), "")}"{type_clause})'
+            )
+            proc = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return None
+            return proc.stdout.strip() or None
+        if system == "Windows":
+            filt = "All files (*.*)|*.*"
+            if types:
+                pats = ";".join(f"*.{t}" for t in types)
+                filt = f"Text ({pats})|{pats}|All files (*.*)|*.*"
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$d = New-Object System.Windows.Forms.OpenFileDialog; "
+                f"$d.Title = '{title.replace(chr(39), '')}'; "
+                f"$d.Filter = '{filt}'; "
+                "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.FileName }"
+            )
+            proc = subprocess.run(
+                ["powershell", "-STA", "-NoProfile", "-Command", ps],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            path = (proc.stdout or "").strip()
+            return path or None
+        zenity = shutil.which("zenity")
+        if zenity:
+            cmd = [zenity, "--file-selection", f"--title={title}"]
+            if types:
+                cmd.append(f"--file-filter=*.{' *.'.join(types)}")
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            path = (proc.stdout or "").strip()
+            return path or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "has_session": _session is not None}
@@ -193,6 +288,19 @@ def dialog_folder(body: Optional[FolderDialogBody] = None):
     resolved = Path(path).expanduser().resolve()
     if not resolved.is_dir():
         raise HTTPException(400, f"Not a directory: {resolved}")
+    return {"path": str(resolved), "cancelled": False}
+
+
+@app.post("/dialog/file")
+def dialog_file(body: Optional[FileDialogBody] = None):
+    title = (body.title if body else None) or "Select file"
+    types = body.types if body else None
+    path = pick_file_dialog(title, types)
+    if not path:
+        return {"path": None, "cancelled": True}
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise HTTPException(400, f"Not a file: {resolved}")
     return {"path": str(resolved), "cancelled": False}
 
 
@@ -238,6 +346,166 @@ def close_session():
     global _session
     _session = None
     return {"ok": True}
+
+
+@app.post("/session/target")
+def set_session_target(body: TargetBody):
+    core = _core()
+    if body.target_width < 1 or body.target_height < 1:
+        raise HTTPException(400, "target_width/height must be >= 1")
+    core.set_target_size(body.target_width, body.target_height)
+    save_prefs({
+        "target_width": body.target_width,
+        "target_height": body.target_height,
+    })
+    return core.session_snapshot()
+
+
+@app.post("/import/download")
+def import_download(body: ImportDownloadBody):
+    """SSE stream of download progress, final event has complete=True and report fields."""
+    import threading
+    from queue import Queue
+
+    from import_download import download_from_sources, parse_pasted_urls
+
+    dest = Path(body.dest).expanduser().resolve()
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        raise HTTPException(400, f"Cannot create dest: {e}") from e
+    urls = body.urls
+    if urls is None and not body.url_file and not body.url_folder:
+        raise HTTPException(400, "Provide urls, url_file, or url_folder")
+    if isinstance(urls, list) and len(urls) == 1 and "\n" in urls[0]:
+        urls = parse_pasted_urls(urls[0])
+
+    q: Queue = Queue()
+
+    def worker():
+        try:
+            def on_progress(ev):
+                q.put(("progress", ev))
+
+            report = download_from_sources(
+                str(dest),
+                name=body.name,
+                urls=urls,
+                url_file=body.url_file,
+                url_folder=body.url_folder,
+                force=body.force,
+                progress=on_progress,
+            )
+            save_prefs({"last_batch_root_dir": report["root"], "mode": "batch"})
+            q.put(("done", report))
+        except Exception as e:
+            q.put(("error", str(e)))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    def events():
+        yield f"data: {json.dumps({'phase': 'start', 'dest': str(dest)})}\n\n"
+        while True:
+            kind, payload = q.get()
+            if kind == "progress":
+                yield f"data: {json.dumps({'phase': 'download', **payload})}\n\n"
+            elif kind == "done":
+                yield f"data: {json.dumps({**payload, 'phase': 'complete', 'complete': True})}\n\n"
+                break
+            elif kind == "error":
+                yield f"data: {json.dumps({'phase': 'error', 'error': payload, 'complete': True})}\n\n"
+                break
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.post("/arrange/auto")
+def arrange_auto(body: ArrangeAutoBody):
+    """SSE progress while AutoArrange runs; final event includes session + auto_result."""
+    core = _core()
+    opts = {
+        "slot": body.slot,
+        "near_to_far": body.near_to_far,
+        "lead_index": body.lead_index if body.lead_index is not None else core.current_idx,
+        "axis": body.axis,
+        "roi": body.roi,
+    }
+
+    def events():
+        import threading
+        from queue import Queue
+
+        q: Queue = Queue()
+        total = max(1, core.total_images)
+
+        def on_progress(done, tot, name):
+            q.put(("progress", {
+                "done": int(done),
+                "total": int(tot or total),
+                "filename": name or "",
+            }))
+
+        def worker():
+            try:
+                ok, result = core.auto_arrange(body.mode, opts, progress_callback=on_progress)
+                if not ok:
+                    q.put(("error", str(result)))
+                else:
+                    q.put(("done", {**core.session_snapshot(), "auto_result": result}))
+            except RuntimeError as e:
+                q.put(("error", str(e)))
+            except Exception as e:
+                q.put(("error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        yield f"data: {json.dumps({'phase': 'start', 'mode': body.mode, 'done': 0, 'total': total})}\n\n"
+        while True:
+            kind, payload = q.get()
+            if kind == "progress":
+                yield f"data: {json.dumps({'phase': 'progress', **payload})}\n\n"
+            elif kind == "done":
+                yield f"data: {json.dumps({**payload, 'phase': 'complete', 'complete': True})}\n\n"
+                break
+            elif kind == "error":
+                yield f"data: {json.dumps({'phase': 'error', 'error': payload, 'complete': True})}\n\n"
+                break
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.post("/arrange/slot")
+def arrange_slot(body: ArrangeSlotBody):
+    core = _core()
+    if not core.save_arrangement_slot(body.slot, body.order_names):
+        raise HTTPException(400, "Invalid slot")
+    return core.session_snapshot()
+
+
+@app.post("/arrange/recall")
+def arrange_recall(body: ArrangeRecallBody):
+    core = _core()
+    if not core.recall_arrangement(body.slot):
+        raise HTTPException(400, f"No arrangement saved for slot {body.slot}")
+    return core.session_snapshot()
+
+
+@app.post("/arrange/leave")
+def arrange_leave(body: Optional[ArrangeLeaveBody] = None):
+    core = _core()
+    commit = True if body is None else body.commit
+    slot = core.commit_arrange_draft_to_next_slot() if commit else None
+    if not commit:
+        core._arrange_draft = None
+    return {**core.session_snapshot(), "committed_slot": slot}
+
+
+@app.post("/arrange/reverse")
+def arrange_reverse():
+    """Reverse the current arrangement in place (updates active slot; no new preset)."""
+    core = _core()
+    if not core.reverse_arrangement_in_place():
+        raise HTTPException(400, "Could not reverse arrangement")
+    return core.session_snapshot()
 
 
 @app.post("/focal")
@@ -297,6 +565,16 @@ def discard(index: Optional[int] = None):
     core.discard_current()
     if not core.image_files:
         return {"empty": True, **core.session_snapshot()}
+    return core.session_snapshot()
+
+
+@app.post("/duplicate")
+def duplicate_current():
+    """Copy the current image on disk and insert it after the current index."""
+    core = _core()
+    ok, err = core.duplicate_current()
+    if not ok:
+        raise HTTPException(400, err or "Duplicate failed")
     return core.session_snapshot()
 
 
@@ -365,18 +643,37 @@ def export_images(body: ExportBody):
     orientation = body.orientation if body.orientation in ("landscape", "portrait") else "landscape"
 
     def events():
+        import threading
+        from queue import Queue
+
         total = core.total_images
+        q: Queue = Queue()
 
         def progress(done, tot, name):
-            payload = json.dumps({"done": done, "total": tot, "filename": name})
-            events.latest = payload
+            q.put(("progress", {"done": done, "total": tot, "filename": name}))
 
-        events.latest = None
-        exported = core.export_aligned(dest, orientation, progress_callback=progress)
-        if body.cleanup:
-            core.cleanup_preview_folders()
-            core.delete_focal_points_file()
-        yield f"data: {json.dumps({'done': total, 'total': total, 'exported': exported, 'output_folder': str(dest), 'complete': True})}\n\n"
+        def worker():
+            try:
+                exported = core.export_aligned(dest, orientation, progress_callback=progress)
+                if body.cleanup:
+                    # Clear preview cache only — keep focal_points.json for reopen/edit.
+                    core.cleanup_preview_folders()
+                q.put(("done", {"exported": exported, "output_folder": str(dest), "total": total}))
+            except Exception as e:
+                q.put(("error", str(e)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        yield f"data: {json.dumps({'phase': 'start', 'done': 0, 'total': total})}\n\n"
+        while True:
+            kind, payload = q.get()
+            if kind == "progress":
+                yield f"data: {json.dumps({'phase': 'export', **payload})}\n\n"
+            elif kind == "done":
+                yield f"data: {json.dumps({**payload, 'phase': 'complete', 'complete': True, 'done': payload.get('total', total)})}\n\n"
+                break
+            elif kind == "error":
+                yield f"data: {json.dumps({'phase': 'error', 'error': payload, 'complete': True})}\n\n"
+                break
 
     return StreamingResponse(events(), media_type="text/event-stream")
 

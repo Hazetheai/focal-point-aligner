@@ -103,7 +103,27 @@ def test_thumb_and_preview_keyed_by_filename(tmp_path):
     assert core.ensure_preview_for_current("landscape") is True
     preview = core.preview_path(core.image_files[0], "landscape")
     assert preview.exists()
-    assert preview.name == "image0000_landscape.jpg"
+    assert preview.name == "image0000_landscape_u8.jpg"
+
+
+def test_load_image_safely_scales_10bit_uint16(tmp_path):
+    """10-bit data in uint16 must become normal 8-bit BGR, not near-white JPEG."""
+    from aligner_core import load_image_safely, render_aligned
+
+    path = tmp_path / "tenbit.png"
+    # Synthetic 10-bit image: mid gray + a bright patch
+    img16 = np.full((120, 160, 3), 400, dtype=np.uint16)
+    img16[40:80, 50:110] = 900
+    cv2.imwrite(str(path), img16)
+    loaded, method = load_image_safely(path)
+    assert method == "opencv"
+    assert loaded is not None
+    assert loaded.dtype == np.uint8
+    assert loaded.shape == (120, 160, 3)
+    assert 60 < loaded.mean() < 200
+    aligned, _ = render_aligned(loaded, (80, 60), 320, 180)
+    assert aligned.dtype == np.uint8
+    assert aligned.mean() < 240
 
 
 def test_reorder_does_not_wipe_filename_previews(tmp_path):

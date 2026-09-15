@@ -12,51 +12,52 @@ Needs **Node.js** and **Python 3**. From the repo root:
 npm run dev
 ```
 
-That creates the Python venv if needed, installs deps, starts the API, and opens **http://localhost:5173**. Stop with Ctrl+C.
+That creates the Python venv if needed, installs deps, starts the API on **8765**, Vite on **5173**, and opens the browser. Stop with Ctrl+C.
 
 Equivalent: `./dev.sh`
 
 ## How it works
 
-1. Pick an input folder (and optional output folder) → set target width/height → **Start**.
-2. **Original** tab: click to set a focal point. Scroll the wheel to resize the crop box (aspect locked). **Enter** or double-click saves and goes to the next image. **X** / **Shift+middle-click** discards. Prev / current / next columns are resizable (current larger by default). **Details** expands image metadata; the path expands on first click and copies on the second.
-3. **Preview** tab: the aligned crop of the same image. Drag to fine-tune the focal; middle-drag or wheel to zoom; **`<`** fades the previous image on top, **`>`** fades the next. **Compare** toggles saved vs draft; **Commit** writes the fine-tune. If no focal is set yet, it shows the original instead of inventing one.
-4. **Arrange** tab: drag thumbnails to set export order. Toggle **Original** / **Aligned** thumbs. The selected image is the one Original/Preview show.
-5. **F** (or Export) writes `{0000,0001,...}.jpg` into the output folder.
-6. **Esc** returns to the opener so you can process another folder.
+1. **Opener** — Single / Batch / **Import**. Set target size with ratio + resolution presets (or manual W×H) → **Start**. Import pastes URLs or picks a `.txt` / folder of lists, downloads into a batch root, then continues as Batch.
+2. **Original** — click/drag to set a focal; wheel resizes the crop box (aspect locked). **Enter** or double-click saves and advances. **X** / **Shift+middle-click** discards. **D** duplicates the current file on disk. Header can retarget size mid-session. **Guides** drawer: rule-of-thirds grid (**G**) and optional composition mask (**I**).
+3. **Preview** — aligned crop of the same image. Drag to pan; middle-drag / wheel to zoom (`crop_scale`). **Enter** commits a dirty draft; **C** compares saved vs draft. Live zoom indicator in the toolbar. **Wrap** toggles whether ←→ loop the list.
+4. **Arrange** — drag thumbnails (multi-select with Cmd/Ctrl or Shift). AutoArrange: **Color**, **Depth near→far**, **Lead match**, **Faces** (SSE progress above the buttons). **Reverse** flips the active slot in place (button stays lit while reversed). Slots **0–9**; **C** compares two slots.
+5. **E** / Export writes `{0000,0001,…}.jpg` with live progress. `focal_points.json` is kept in the **input** folder.
+6. **Esc** / Done returns to the opener; in batch mode opens the next pending folder.
 
-Cropping is straightforward: the focal point is centered in the output (clamped at edges). Large photos take a native-pixel crop of the target size; small photos are scaled up to fill the frame. A click shows that keep-region as a dim overlay with a white border. EXIF orientation is applied so the click matches the pixels that get cropped.
+Cropping keeps the focal centered (never letterboxes). Large photos take a native-pixel crop of the target size; small or edge focals scale up to cover. Wheel zoom and edge-forced magnification bake into per-image `crop_scale`. EXIF orientation is applied so clicks match the pixels that get cropped. High-bit-depth sources are normalized to 8-bit for preview/export.
 
-Browse always opens a **folder** picker (not files). Nav dots are pages of 10; unset / focal-set / center states are color-coded.
+Browse opens a **folder** picker (Import can also pick a `.txt`). Nav dots are pages of 10.
 
 ## Keyboard
 
 | Key | Action |
 |-----|--------|
-| Enter | Save focal and go to next |
-| Space / ← → | Skip / navigate (stops at the ends) |
-| X / Shift+middle click | Discard current image |
-| Wheel (Original) | Resize crop box (aspect locked) |
-| Right click | Pending focal at image center |
-| Right double-click | Save center focal and go to next |
-| G | Toggle rule-of-thirds grid (Original / Preview) |
-| Middle-drag / wheel (Preview) | Zoom crop in Preview |
-| `<` `>` | Preview: fade previous / next image on top |
+| Enter | Original: save+next · Preview: commit draft (when dirty) |
+| Space / ← → | Skip / navigate (stops at ends; Preview can Wrap) |
+| X / Shift+middle click | Discard |
+| D | Duplicate current image (Original) |
+| Wheel (Original) | Resize crop box |
+| Right click / right double | Center pending / save center+next |
+| H | Home: center focal + reset crop scale |
+| G / I | Grid / composition mask |
+| Middle-drag / wheel (Preview) | Zoom |
+| `<` `>` | Preview: fade previous / next |
+| C | Preview or Arrange: compare |
+| 0–9 | Arrange: recall slots |
 | Del | Clear focal |
-| P | Preview tab |
-| O | Landscape / portrait |
-| A | Arrange tab |
-| [ ] | Shift current image in the order |
+| P / O / A | Preview / Orient / Arrange |
 | R | Reset all focals |
-| F | Export |
-| Esc | Back to opener (or next batch folder) |
+| E | Export |
+| Esc | Opener (or next batch folder) |
 
-The same actions are on the hotkey strip at the bottom of the aligner.
+Hotkey chips are **tab-scoped** — keys not shown for the current tab do nothing.
 
-## Batch, merge, move aligned
+## Batch, import, merge
 
-- **Batch** mode walks subfolders of a root. After export (or Esc), the next pending folder opens. A folder is done when its `<sub>_aligned` output already has images.
-- **Merge** copies from several folders into one, prefixing filenames with the source folder name.
+- **Batch** walks subfolders of a root. After export (or Esc), the next pending folder opens. Done when `<sub>_aligned` already has images.
+- **Import** downloads URL lists into named folders under a dest root, then hands off to Batch.
+- **Merge** copies from several folders into one, prefixing with the source folder name.
 - **Move aligned** gathers `<sub>_aligned` folders into a sibling `<root>_aligned`.
 
 ## CLI
@@ -96,15 +97,20 @@ The legacy PyQt app is still at `./venv/bin/python main.py`. The supported GUI i
 | Path | Role |
 |------|------|
 | `scripts/dev.sh` | One-command GUI launcher (`npm run dev`) |
-| `api/app.py` | FastAPI session, media, export, batch |
+| `api/app.py` | FastAPI: session, media, export/import/arrange SSE, batch |
 | `web/` | React UI (opener, original / preview / arrange) |
+| `web/src/presets.js` | Size ratio + resolution presets |
 | `aligner_core.py` | UI-free state, crop math, persist, export |
+| `arrange_auto.py` | Color / depth / lead / faces AutoArrange |
+| `import_download.py` | URL-list download helpers |
 | `batch.py` | Folder discovery, merge, move-aligned |
 | `cli.py` | CLI over the same core |
 | `src-tauri/` | Optional Tauri shell |
 | `ui/`, `main.py` | Legacy PyQt GUI |
 
-Config (`config.json`) is gitignored and stores last folders and target size. Focal data lives in `<output_folder>/focal_points.json`. Thumbs/previews are in `<input>/.fpa_cache/`.
+Config (`config.json`) is gitignored and stores last folders and target size. Focal data lives in `<input_folder>/focal_points.json`. Thumbs/previews are in `<input>/.fpa_cache/`. Depth/face ONNX models cache under `.fpa_models/`.
+
+Agent/dev notes: see [`AGENTS.md`](AGENTS.md).
 
 ## License
 

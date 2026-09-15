@@ -1,6 +1,6 @@
 export const DEFAULT_MAX_ZOOM = 3.0
 export const DEFAULT_CROP_SCALE = 1.0
-export const MIN_CROP_SCALE = 0.25
+export const MIN_CROP_SCALE = 0.05
 export const MAX_CROP_SCALE = 8.0
 
 export function clampCropScale(cropScale) {
@@ -32,7 +32,30 @@ function cropScales(focalX, focalY, origW, origH, targetW, targetH, cropScale) {
   const sMax = s0 / MIN_CROP_SCALE
   sReq = Math.max(s0 / MAX_CROP_SCALE, Math.min(sReq, sMax))
   const sEff = Math.max(sReq, sFit)
-  return { fx, fy, sReq, sEff, wFit, hFit }
+  return { fx, fy, s0, sReq, sEff, wFit, hFit }
+}
+
+/**
+ * If edge cover forces magnification beyond the requested crop_scale, bake that
+ * into crop_scale so panning back to center keeps the same zoom.
+ */
+export function bakeCropScale(focalX, focalY, origW, origH, targetW, targetH, cropScale) {
+  if (!origW || !origH || !targetW || !targetH) return clampCropScale(cropScale)
+  const { s0, sReq, sEff } = cropScales(
+    focalX, focalY, origW, origH, targetW, targetH, cropScale,
+  )
+  if (sEff <= sReq + 1e-9) return clampCropScale(cropScale)
+  return clampCropScale(s0 / sEff)
+}
+
+/** Effective magnification vs base framing (1 = crop_scale 1 at a center-friendly focal). */
+export function zoomFactor(focalX, focalY, origW, origH, targetW, targetH, cropScale) {
+  if (!origW || !origH || !targetW || !targetH) return 1
+  const { s0, sEff } = cropScales(
+    focalX, focalY, origW, origH, targetW, targetH, cropScale,
+  )
+  if (!s0) return 1
+  return sEff / s0
 }
 
 /** Port of aligner_core.compute_crop_frame — requested box; may leave the image. */
@@ -103,9 +126,22 @@ export function nudgeCropScale(cropScale, deltaY, factor = 1.08) {
 }
 
 /** Draw a rule-of-thirds grid into a canvas context. */
-export function drawRuleOfThirds(ctx, width, height, { color = 'rgba(255,255,255,0.45)', lineWidth = 1 } = {}) {
+export function drawRuleOfThirds(ctx, width, height, { color = 'rgba(255,255,255,0.85)', lineWidth = 2 } = {}) {
   if (!width || !height) return
   ctx.save()
+  // Soft shadow behind lines for contrast on light/dark regions
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.45)'
+  ctx.lineWidth = lineWidth + 2
+  ctx.beginPath()
+  for (const t of [1 / 3, 2 / 3]) {
+    const x = width * t
+    const y = height * t
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, height)
+    ctx.moveTo(0, y)
+    ctx.lineTo(width, y)
+  }
+  ctx.stroke()
   ctx.strokeStyle = color
   ctx.lineWidth = lineWidth
   ctx.beginPath()
@@ -118,5 +154,63 @@ export function drawRuleOfThirds(ctx, width, height, { color = 'rgba(255,255,255
     ctx.lineTo(width, y)
   }
   ctx.stroke()
+  ctx.restore()
+}
+
+/**
+ * Draw a B&W composition mask into a destination rect.
+ * White (or inverted) regions are filled with a translucent guide color.
+ * `fit`: 'contain' | 'cover' — keep mask aspect ratio, centered in the box.
+ */
+export function drawCompositionMask(ctx, maskImage, dx, dy, dw, dh, {
+  invert = false,
+  opacity = 0.5,
+  color = '255, 220, 60',
+  fit = 'contain',
+} = {}) {
+  if (!maskImage || !dw || !dh) return
+  const tw = Math.max(1, Math.round(dw))
+  const th = Math.max(1, Math.round(dh))
+  const mw = maskImage.naturalWidth || maskImage.width || 0
+  const mh = maskImage.naturalHeight || maskImage.height || 0
+  if (!mw || !mh) return
+
+  const scale = fit === 'cover'
+    ? Math.max(tw / mw, th / mh)
+    : Math.min(tw / mw, th / mh)
+  const rw = mw * scale
+  const rh = mh * scale
+  const ox = (tw - rw) / 2
+  const oy = (th - rh) / 2
+
+  const off = document.createElement('canvas')
+  off.width = tw
+  off.height = th
+  const octx = off.getContext('2d')
+  octx.clearRect(0, 0, tw, th)
+  octx.drawImage(maskImage, ox, oy, rw, rh)
+  const imageData = octx.getImageData(0, 0, tw, th)
+  const data = imageData.data
+  const alpha = Math.round(Math.max(0, Math.min(1, opacity)) * 255)
+  const [r, g, b] = color.split(',').map((v) => Number(v.trim()))
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 8) {
+      data[i + 3] = 0
+      continue
+    }
+    const lum = (data[i] + data[i + 1] + data[i + 2]) / 3
+    const on = invert ? lum < 128 : lum >= 128
+    if (on) {
+      data[i] = r
+      data[i + 1] = g
+      data[i + 2] = b
+      data[i + 3] = alpha
+    } else {
+      data[i + 3] = 0
+    }
+  }
+  octx.putImageData(imageData, 0, 0)
+  ctx.save()
+  ctx.drawImage(off, dx, dy, dw, dh)
   ctx.restore()
 }

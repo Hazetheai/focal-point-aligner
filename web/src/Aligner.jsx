@@ -8,23 +8,47 @@ import {
 } from '@dnd-kit/core'
 import { SortableContext, arrayMove, rectSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { api, mediaUrl } from './api.js'
+import { api, mediaUrl, readSse } from './api.js'
 import {
   computeCrop,
   computeCropFrame,
   cropToWidget,
   nudgeCropScale,
+  bakeCropScale,
+  zoomFactor,
   targetForMode,
   DEFAULT_CROP_SCALE,
   clampCropScale,
   drawRuleOfThirds,
+  drawCompositionMask,
 } from './crop.js'
+import { SIZE_RATIOS, matchRatio, sizeLabel } from './presets.js'
 
 const PAGE_SIZE = 10
 const COLS_KEY = 'fpa-original-cols'
 const GRID_KEY = 'fpa-show-grid'
+const ARRANGE_ZOOM_KEY = 'fpa-arrange-zoom'
 const DEFAULT_COLS = [16, 68, 16]
 const RIGHT_DOUBLE_MS = 400
+
+/** Keys active on every tab. */
+const HOTKEYS_SHARED = new Set(['ArrowLeft', 'ArrowRight', 'x', 'X', 'p', 'P', 'o', 'O', 'a', 'A', 'e', 'E', 'Escape', 'r', 'R'])
+/** Extra keys on Original. */
+const HOTKEYS_ORIGINAL = new Set(['Enter', ' ', 'Delete', 'Backspace', 'h', 'H', 'g', 'G', 'i', 'I', 'd', 'D'])
+/** Extra keys on Preview. */
+const HOTKEYS_PREVIEW = new Set(['c', 'C', 'Enter'])
+/** Extra keys on Arrange. */
+const HOTKEYS_ARRANGE = new Set(['c', 'C', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'])
+const PREVIEW_WRAP_KEY = 'fpa-preview-wrap'
+const MASK_FIT_KEY = 'fpa-mask-fit'
+
+function hotkeyAllowed(tab, key) {
+  if (HOTKEYS_SHARED.has(key)) return true
+  if (tab === 'original') return HOTKEYS_ORIGINAL.has(key)
+  if (tab === 'preview') return HOTKEYS_PREVIEW.has(key)
+  if (tab === 'arrange') return HOTKEYS_ARRANGE.has(key)
+  return false
+}
 
 function focalFromImage(img, pending) {
   if (pending && (pending.index == null || pending.index === img?.id)) return pending
@@ -59,25 +83,84 @@ function dpiLabel(dpi) {
   return x === y ? `${x} DPI` : `${x}×${y} DPI`
 }
 
-function SortableThumb({ id, img, selected, onSelect, onOpen, view, orientation }) {
+function useDismissableOpen(initial = false) {
+  const [open, setOpen] = useState(initial)
+  const rootRef = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const onPointer = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false)
+    }
+    const onKey = (e) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointer, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [open])
+  return [open, setOpen, rootRef]
+}
+
+/** Move a multi-selection as one block to the drop target (preserves relative order). */
+function reorderMulti(order, selectedSet, activeId, overId) {
+  if (!selectedSet.has(activeId) || selectedSet.size <= 1) {
+    const from = order.indexOf(activeId)
+    const to = order.indexOf(overId)
+    if (from < 0 || to < 0) return order
+    return arrayMove(order, from, to)
+  }
+  const selected = order.filter((id) => selectedSet.has(id))
+  const without = order.filter((id) => !selectedSet.has(id))
+  const activeIdx = order.indexOf(activeId)
+  const overIdx = order.indexOf(overId)
+  let insertAt = without.indexOf(overId)
+  if (insertAt < 0) {
+    insertAt = order.slice(0, overIdx).filter((id) => !selectedSet.has(id)).length
+  } else if (activeIdx < overIdx) {
+    insertAt += 1
+  }
+  return [...without.slice(0, insertAt), ...selected, ...without.slice(insertAt)]
+}
+
+function SortableThumb({
+  id, img, selected, current, multiCount, onSelect, onOpen, onDiscard,
+  view, orientation, targetW = 2560, targetH = 1440,
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.45 : 1 }
   const aligned = view === 'aligned'
   const src = aligned && img.focal
-    ? mediaUrl('preview', img.id, `?orientation=${orientation || 'landscape'}&f=${img.focal[0]}-${img.focal[1]}&s=${img.crop_scale ?? 1}&n=${encodeURIComponent(img.filename)}`)
+    ? mediaUrl('preview', img.id, `?orientation=${orientation || 'landscape'}&f=${img.focal[0]}-${img.focal[1]}&s=${img.crop_scale ?? 1}&n=${encodeURIComponent(img.filename)}&tw=${targetW}&th=${targetH}`)
     : mediaUrl('thumb', img.id, `?n=${encodeURIComponent(img.filename)}`)
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`thumb ${selected ? 'selected' : ''} ${img.completed ? 'done' : ''} ${aligned && !img.focal ? 'no-focal' : ''}`}
-      onClick={() => onSelect(img.id)}
+      className={`thumb ${selected ? 'selected' : ''} ${current ? 'current' : ''} ${img.completed ? 'done' : ''} ${aligned && !img.focal ? 'no-focal' : ''}`}
+      onClick={(e) => onSelect(e, img.id, img.filename)}
       onDoubleClick={() => onOpen(img.id)}
+      onPointerDownCapture={(e) => {
+        if (e.button === 1) {
+          e.preventDefault()
+          e.stopPropagation()
+          if (e.shiftKey && onDiscard) onDiscard(img.id)
+        }
+      }}
+      onAuxClick={(e) => {
+        if (e.button === 1) {
+          e.preventDefault()
+          e.stopPropagation()
+        }
+      }}
       {...attributes}
       {...listeners}
     >
       <img src={src} alt={img.filename} loading="lazy" draggable={false} />
       <span className="idx">{img.id + 1}</span>
+      {isDragging && multiCount > 1 && <span className="thumb-multi-badge">{multiCount}</span>}
       {aligned && !img.focal && <span className="thumb-note">no focal</span>}
     </div>
   )
@@ -134,17 +217,203 @@ function NavDots({ session, onGo }) {
   )
 }
 
-function Hotkey({ kbd, label, onClick, danger }) {
+function Hotkey({ kbd, label, onClick, danger, disabled }) {
   return (
-    <button type="button" className={`hotkey ${danger ? 'danger' : ''}`} onClick={onClick} title={`${label} (${kbd})`}>
+    <button
+      type="button"
+      className={`hotkey ${danger ? 'danger' : ''} ${disabled ? 'disabled' : ''}`}
+      onClick={onClick}
+      disabled={disabled}
+      title={`${label} (${kbd})${disabled ? ' — unavailable' : ''}`}
+    >
       <span className="hotkey-kbd">{kbd}</span>
       <span className="hotkey-label">{label}</span>
     </button>
   )
 }
 
+function SizePanel({ width, height, onApply }) {
+  const [open, setOpen, rootRef] = useDismissableOpen(false)
+  const [manualW, setManualW] = useState(width)
+  const [manualH, setManualH] = useState(height)
+  const [pickedRatio, setPickedRatio] = useState(null)
+  const ratioId = pickedRatio || matchRatio(width, height)
+  const ratioLabel = ratioId || 'Custom'
+  const ratioPreset = SIZE_RATIOS.find((r) => r.id === ratioId) || null
+
+  useEffect(() => {
+    setManualW(width)
+    setManualH(height)
+    setPickedRatio(null)
+  }, [width, height])
+
+  return (
+    <div className="image-facts size-panel" ref={rootRef}>
+      <button type="button" className="facts-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="Target size">
+        <span className="facts-role">Size</span>
+        <span>{ratioLabel} · {width}×{height}</span>
+        <span className="facts-caret" aria-hidden="true">{open ? '▴' : '▾'}</span>
+      </button>
+      {open && (
+        <div className="facts-panel size-facts-panel">
+          <div>
+            <div className="panel-section-label">Ratio</div>
+            <div className="row wrap">
+              {SIZE_RATIOS.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  className={ratioId === r.id ? '' : 'secondary'}
+                  onClick={() => {
+                    setPickedRatio(r.id)
+                    const match = r.sizes.find(([w, h]) => w === Number(width) && h === Number(height))
+                    const [w, h] = match || r.sizes[Math.min(1, r.sizes.length - 1)]
+                    onApply(w, h)
+                  }}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="panel-section-label">Resolution</div>
+            <div className="row wrap">
+              {(ratioPreset ? ratioPreset.sizes : SIZE_RATIOS.flatMap((r) => r.sizes)).map(([w, h]) => (
+                <button
+                  key={`${w}x${h}`}
+                  type="button"
+                  className={w === Number(width) && h === Number(height) ? '' : 'secondary'}
+                  onClick={() => onApply(w, h)}
+                >
+                  {sizeLabel([w, h])}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="panel-section-label">Manual</div>
+            <div className="row">
+              <label>W <input type="number" min={1} value={manualW} onChange={(e) => setManualW(e.target.value)} /></label>
+              <label>H <input type="number" min={1} value={manualH} onChange={(e) => setManualH(e.target.value)} /></label>
+              <button
+                type="button"
+                onClick={() => {
+                  const w = Number(manualW)
+                  const h = Number(manualH)
+                  if (w >= 1 && h >= 1) onApply(w, h)
+                }}
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function OverlayPanel({
+  showGrid, setShowGrid,
+  maskImage, showMask, setShowMask,
+  maskInvert, setMaskInvert,
+  maskHalfOpacity, setMaskHalfOpacity,
+  maskFit, setMaskFit,
+  onPickMask,
+}) {
+  const [open, setOpen, rootRef] = useDismissableOpen(false)
+  const bits = []
+  if (showGrid) bits.push('Grid')
+  if (showMask) bits.push(maskInvert ? 'Mask↕' : 'Mask')
+  if (showMask) bits.push(maskFit === 'cover' ? 'Cover' : 'Contain')
+  if (showMask && maskHalfOpacity) bits.push('50%')
+  else if (showMask) bits.push('100%')
+  const summary = bits.length ? bits.join(' · ') : 'Guides off'
+
+  return (
+    <div className="image-facts overlay-panel" ref={rootRef}>
+      <button type="button" className="facts-toggle" onClick={() => setOpen((v) => !v)} aria-expanded={open} title="Composition guides">
+        <span className="facts-role">Guides</span>
+        <span>{summary}</span>
+        <span className="facts-caret" aria-hidden="true">{open ? '▴' : '▾'}</span>
+      </button>
+      {open && (
+        <div className="facts-panel overlay-facts-panel">
+          {maskImage ? (
+            <div className="mask-thumb-wrap">
+              <img className="mask-thumb" src={maskImage.src} alt="Composition mask" />
+              <span className="muted">Mask preview</span>
+            </div>
+          ) : (
+            <p className="muted">No mask loaded — upload a black &amp; white image (white = guide).</p>
+          )}
+          <div className="row wrap">
+            <button type="button" className="secondary" onClick={onPickMask}>Upload mask…</button>
+            <button
+              type="button"
+              aria-pressed={showGrid}
+              className={showGrid ? '' : 'secondary'}
+              onClick={() => setShowGrid((v) => !v)}
+            >
+              Grid {showGrid ? 'On' : 'Off'}
+            </button>
+            <button
+              type="button"
+              aria-pressed={showMask}
+              className={showMask ? '' : 'secondary'}
+              disabled={!maskImage}
+              onClick={() => setShowMask((v) => !v)}
+            >
+              Mask {showMask ? 'On' : 'Off'}
+            </button>
+            <button
+              type="button"
+              aria-pressed={maskFit === 'contain'}
+              className={maskFit === 'contain' ? '' : 'secondary'}
+              disabled={!maskImage}
+              onClick={() => setMaskFit('contain')}
+              title="Fit entire mask inside the crop (letterbox)"
+            >
+              Contain
+            </button>
+            <button
+              type="button"
+              aria-pressed={maskFit === 'cover'}
+              className={maskFit === 'cover' ? '' : 'secondary'}
+              disabled={!maskImage}
+              onClick={() => setMaskFit('cover')}
+              title="Fill the crop with the mask (may crop edges)"
+            >
+              Cover
+            </button>
+            <button
+              type="button"
+              aria-pressed={maskInvert}
+              className={maskInvert ? '' : 'secondary'}
+              disabled={!maskImage}
+              onClick={() => setMaskInvert((v) => !v)}
+            >
+              Invert
+            </button>
+            <button
+              type="button"
+              aria-pressed={maskHalfOpacity}
+              className={maskHalfOpacity ? '' : 'secondary'}
+              disabled={!maskImage}
+              onClick={() => setMaskHalfOpacity((v) => !v)}
+            >
+              {maskHalfOpacity ? 'Opacity 50%' : 'Opacity 100%'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ImageFacts({ img, pending }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen, rootRef] = useDismissableOpen(false)
   const [pathExpanded, setPathExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
   const copyTimer = useRef(null)
@@ -189,16 +458,15 @@ function ImageFacts({ img, pending }) {
   }
 
   return (
-    <div className="image-facts">
-      <button type="button" className="facts-toggle" onClick={toggleOpen} aria-expanded={open}>
-        <span>{img.width} × {img.height} px</span>
-        <span>{mp ? `${Number(mp).toFixed(1)} MP` : ''}</span>
-        {dpi && <span>{dpi}</span>}
-        <span className="facts-caret">{open ? 'Hide' : 'Details'}</span>
+    <div className="image-facts" ref={rootRef}>
+      <button type="button" className="facts-toggle" onClick={toggleOpen} aria-expanded={open} title="Image details">
+        <span className="facts-role">Details</span>
+        <span>{img.width} × {img.height} px{mp ? ` · ${Number(mp).toFixed(1)} MP` : ''}{dpi ? ` · ${dpi}` : ''}</span>
+        <span className="facts-caret" aria-hidden="true">{open ? '▴' : '▾'}</span>
       </button>
       {open && (
         <dl className="facts-panel">
-          <div><dt>File</dt><dd>{img.filename}</dd></div>
+          <div><dt>File</dt><dd className="facts-filename">{img.filename}</dd></div>
           <div><dt>Pixels</dt><dd>{img.width.toLocaleString()} × {img.height.toLocaleString()} ({Number(mp).toFixed(2)} MP)</dd></div>
           <div><dt>DPI</dt><dd>{dpi || 'not tagged'}</dd></div>
           <div><dt>Size</dt><dd>{formatBytes(img.bytes)}</dd></div>
@@ -255,6 +523,21 @@ function useShowGrid() {
   return [showGrid, setShowGrid]
 }
 
+function useArrangeZoom() {
+  const [zoom, setZoom] = useState(() => {
+    try {
+      const n = Number(localStorage.getItem(ARRANGE_ZOOM_KEY))
+      if (Number.isFinite(n)) return Math.min(2, Math.max(0.6, n))
+    } catch { /* ignore */ }
+    return 1
+  })
+  useEffect(() => {
+    localStorage.setItem(ARRANGE_ZOOM_KEY, String(zoom))
+  }, [zoom])
+  const nudge = (delta) => setZoom((z) => Math.min(2, Math.max(0.6, Math.round((z + delta) * 10) / 10)))
+  return [zoom, nudge]
+}
+
 function SplitHandle({ onBegin, onDrag }) {
   return (
     <div
@@ -296,7 +579,10 @@ function SidePane({ img, label, onOpen }) {
   )
 }
 
-function FocalStage({ session, pending, setPending, onConfirm, onDiscard, showGrid }) {
+function FocalStage({
+  session, pending, setPending, onConfirm, onDiscard, showGrid,
+  maskImage, showMask, maskInvert, maskHalfOpacity, maskFit,
+}) {
   const canvasRef = useRef(null)
   const imgRef = useRef(null)
   const stageRef = useRef(null)
@@ -360,6 +646,13 @@ function FocalStage({ session, pending, setPending, onConfirm, onDiscard, showGr
     if (!layout) return
     const { left, top, dw, dh } = layout
     if (!showOverlay) {
+      if (showMask && maskImage) {
+        drawCompositionMask(ctx, maskImage, left, top, dw, dh, {
+          invert: maskInvert,
+          opacity: maskHalfOpacity ? 0.5 : 0.72,
+          fit: maskFit,
+        })
+      }
       if (showGrid) {
         ctx.save()
         ctx.translate(left, top)
@@ -391,6 +684,13 @@ function FocalStage({ session, pending, setPending, onConfirm, onDiscard, showGr
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)'
     ctx.lineWidth = 2
     ctx.strokeRect(boxStage.x + 1, boxStage.y + 1, Math.max(0, boxStage.w - 2), Math.max(0, boxStage.h - 2))
+    if (showMask && maskImage && boxStage.w > 0 && boxStage.h > 0) {
+      drawCompositionMask(ctx, maskImage, boxStage.x, boxStage.y, boxStage.w, boxStage.h, {
+        invert: maskInvert,
+        opacity: maskHalfOpacity ? 0.5 : 0.72,
+        fit: maskFit,
+      })
+    }
     if (showGrid && boxStage.w > 0 && boxStage.h > 0) {
       ctx.save()
       ctx.beginPath()
@@ -552,7 +852,11 @@ function FocalStage({ session, pending, setPending, onConfirm, onDiscard, showGr
   )
 }
 
-function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
+function PreviewStage({
+  session, onCommit, onError, showGrid, draftFlushRef,
+  maskImage, showMask, maskInvert, maskHalfOpacity, maskFit,
+  wrapNav, setWrapNav, compareApiRef,
+}) {
   const viewportRef = useRef(null)
   const stageRef = useRef(null)
   const canvasRef = useRef(null)
@@ -572,11 +876,18 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
   // -1 = previous fully on top, 0 = current only, +1 = next fully on top
   const [neighbor, setNeighbor] = useState(0)
   const [committing, setCommitting] = useState(false)
+  const [focalPulse, setFocalPulse] = useState(0)
+
+  function nudgeNeedFocal() {
+    if (img?.focal) return
+    setFocalPulse((n) => n + 1)
+  }
 
   useEffect(() => {
     setDraft(committed)
     setCompare(false)
     setNeighbor(0)
+    setFocalPulse(0)
   }, [img?.id, committed.x, committed.y, committed.cropScale])
 
   const view = compare ? committed : draft
@@ -585,6 +896,55 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
     || Math.abs(draft.y - committed.y) > 0.5
     || Math.abs(draft.cropScale - committed.cropScale) > 0.001
   )
+
+  async function commit() {
+    if (!img || !dirty || committing) return
+    setCommitting(true)
+    try {
+      await onCommit({
+        x: draft.x,
+        y: draft.y,
+        cropScale: draft.cropScale,
+        autoCenter: false,
+      })
+      setCompare(false)
+    } catch (err) {
+      onError?.(err.message || String(err))
+    } finally {
+      setCommitting(false)
+    }
+  }
+
+  const commitRef = useRef(commit)
+  commitRef.current = commit
+
+  useEffect(() => {
+    if (!compareApiRef) return undefined
+    compareApiRef.current = {
+      dirty,
+      compare,
+      canToggle: dirty,
+      canCommit: dirty && !compare && !committing,
+      toggle: () => {
+        if (!dirty) return false
+        setCompare((v) => !v)
+        return true
+      },
+      commit: () => {
+        if (!dirty || compare || committing) return false
+        commitRef.current?.()
+        return true
+      },
+      nudgeNeedFocal: () => {
+        if (img?.focal) return false
+        setFocalPulse((n) => n + 1)
+        return true
+      },
+    }
+    return () => {
+      if (compareApiRef) compareApiRef.current = null
+    }
+  }, [dirty, compare, committing, compareApiRef, img?.focal])
 
   useEffect(() => {
     if (!draftFlushRef) return undefined
@@ -603,6 +963,16 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
       if (draftFlushRef) draftFlushRef.current = null
     }
   }, [dirty, draft.x, draft.y, draft.cropScale, img, draftFlushRef])
+
+  function applyDraftScale(nextScale, x, y) {
+    const image = imgRef.current
+    if (!image?.naturalWidth) return clampCropScale(nextScale)
+    const target = targetForMode(session)
+    return bakeCropScale(
+      x, y, image.naturalWidth, image.naturalHeight,
+      target.w, target.h, clampCropScale(nextScale),
+    )
+  }
 
   function draw() {
     const canvas = canvasRef.current
@@ -630,7 +1000,16 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, dw, dh)
     ctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, dw, dh)
-    if (showGrid) drawRuleOfThirds(ctx, dw, dh)
+    if (showMask && maskImage) {
+      drawCompositionMask(ctx, maskImage, 0, 0, dw, dh, {
+        invert: maskInvert,
+        opacity: maskHalfOpacity ? 0.5 : 0.72,
+        fit: maskFit,
+      })
+    }
+    if (showGrid) {
+      drawRuleOfThirds(ctx, dw, dh)
+    }
   }
   drawLatest.current = draw
 
@@ -645,9 +1024,17 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
     ro.observe(viewport)
     window.addEventListener('resize', redraw)
     const onWheelNative = (e) => {
-      if (!img?.focal || compare) return
+      if (!img?.focal) {
+        e.preventDefault()
+        nudgeNeedFocal()
+        return
+      }
+      if (compare) return
       e.preventDefault()
-      setDraft((d) => ({ ...d, cropScale: nudgeCropScale(d.cropScale, e.deltaY) }))
+      setDraft((d) => {
+        const next = nudgeCropScale(d.cropScale, e.deltaY)
+        return { ...d, cropScale: applyDraftScale(next, d.x, d.y) }
+      })
       setCompare(false)
     }
     stage?.addEventListener('wheel', onWheelNative, { passive: false })
@@ -684,16 +1071,31 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
     )
     const sx = crop.w / canvas.clientWidth
     const sy = crop.h / canvas.clientHeight
-    setDraft((d) => ({
-      ...d,
-      x: Math.max(0, Math.min(image.naturalWidth, d.x - dx * sx)),
-      y: Math.max(0, Math.min(image.naturalHeight, d.y - dy * sy)),
-    }))
+    setDraft((d) => {
+      const x = Math.max(0, Math.min(image.naturalWidth, d.x - dx * sx))
+      const y = Math.max(0, Math.min(image.naturalHeight, d.y - dy * sy))
+      return {
+        ...d,
+        x,
+        y,
+        cropScale: bakeCropScale(
+          x, y, image.naturalWidth, image.naturalHeight,
+          target.w, target.h, d.cropScale,
+        ),
+      }
+    })
     setCompare(false)
   }
 
   function onPointerDown(e) {
-    if (!img?.focal || compare) return
+    if (!img?.focal) {
+      if (e.button === 0 || e.button === 1) {
+        e.preventDefault()
+        nudgeNeedFocal()
+      }
+      return
+    }
+    if (compare) return
     if (e.button === 0) {
       e.preventDefault()
       drag.current = { mode: 'pan', x: e.clientX, y: e.clientY }
@@ -715,7 +1117,7 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
     } else if (drag.current.mode === 'zoom') {
       const dy = e.clientY - drag.current.y
       const next = clampCropScale(drag.current.scale * (2 ** (dy / 180)))
-      setDraft((d) => ({ ...d, cropScale: next }))
+      setDraft((d) => ({ ...d, cropScale: applyDraftScale(next, d.x, d.y) }))
       setCompare(false)
     }
   }
@@ -727,30 +1129,12 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
     }
   }
 
-  async function commit() {
-    if (!img || !dirty || committing) return
-    setCommitting(true)
-    try {
-      await onCommit({
-        x: draft.x,
-        y: draft.y,
-        cropScale: draft.cropScale,
-        autoCenter: false,
-      })
-      setCompare(false)
-    } catch (err) {
-      onError?.(err.message || String(err))
-    } finally {
-      setCommitting(false)
-    }
-  }
-
   if (!img) return null
 
   function neighborMedia(other) {
     if (!other) return null
     return other.focal
-      ? mediaUrl('preview', other.id, `?orientation=${session.alignment_mode || 'landscape'}&f=${other.focal[0]}-${other.focal[1]}&s=${other.crop_scale ?? 1}&n=${encodeURIComponent(other.filename)}`)
+      ? mediaUrl('preview', other.id, `?orientation=${session.alignment_mode || 'landscape'}&f=${other.focal[0]}-${other.focal[1]}&s=${other.crop_scale ?? 1}&n=${encodeURIComponent(other.filename)}&tw=${session.target_width}&th=${session.target_height}`)
       : mediaUrl('original', other.id, `?n=${encodeURIComponent(other.filename)}`)
   }
 
@@ -764,15 +1148,62 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
       ? (nextImg ? `Next ${Math.round(neighborOpacity * 100)}%` : 'No next image')
       : 'Neighbors off'
 
+  const target = targetForMode(session)
+  const zoomLabel = img.focal
+    ? `Zoom ${zoomFactor(
+      view.x, view.y, img.width || 0, img.height || 0,
+      target.w, target.h, view.cropScale,
+    ).toFixed(2)}×`
+    : 'Zoom —'
+
   return (
     <div className="workspace preview">
       <div className="preview-toolbar">
-        <button type="button" aria-selected={compare} disabled={!dirty} onClick={() => setCompare((v) => !v)}>
-          Compare
+        <button
+          type="button"
+          aria-selected={compare}
+          disabled={Boolean(img.focal) && !dirty}
+          title={
+            !img.focal
+              ? 'Set a focal on Original first'
+              : dirty
+                ? 'Toggle saved vs draft framing (C)'
+                : 'Make a pan/zoom change to enable Compare'
+          }
+          onClick={() => {
+            if (!img.focal) {
+              nudgeNeedFocal()
+              return
+            }
+            setCompare((v) => !v)
+          }}
+        >
+          Compare (C)
         </button>
-        <button type="button" disabled={!dirty || committing || compare} onClick={commit}>
+        <button
+          type="button"
+          disabled={Boolean(img.focal) && (!dirty || committing || compare)}
+          title={!img.focal ? 'Set a focal on Original first' : undefined}
+          onClick={() => {
+            if (!img.focal) {
+              nudgeNeedFocal()
+              return
+            }
+            commit()
+          }}
+        >
           {committing ? 'Saving…' : 'Commit'}
         </button>
+        <button
+          type="button"
+          className="secondary"
+          aria-pressed={wrapNav}
+          title={wrapNav ? 'Wrapping on: arrows loop the list' : 'Wrapping off: stop at first/last'}
+          onClick={() => setWrapNav((v) => !v)}
+        >
+          Wrap {wrapNav ? 'On' : 'Off'}
+        </button>
+        <span className={`muted${img.focal ? '' : ' preview-zoom-muted'}`}>{zoomLabel}</span>
         <span className="muted">
           {img.focal
             ? (compare ? 'Showing saved framing' : dirty ? 'Unsaved fine-tune' : 'Drag to pan · MMB/wheel zoom · < prev · > next')
@@ -811,7 +1242,15 @@ function PreviewStage({ session, onCommit, onError, showGrid, draftFlushRef }) {
               style={{ opacity: neighborOpacity }}
             />
           )}
-          {!img.focal && <span className="stage-note">No focal — showing original</span>}
+          {!img.focal && (
+            <span
+              key={focalPulse || 'idle'}
+              className={`stage-note need-focal${focalPulse ? ' is-pulsing' : ''}`}
+              role="status"
+            >
+              Set a focal on Original to fine-tune
+            </span>
+          )}
           {compare && <span className="stage-note">Compare: saved</span>}
         </div>
       </div>
@@ -824,13 +1263,43 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
   const [pending, setPending] = useState(null)
   const [exportOpen, setExportOpen] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [exportDone, setExportDone] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [progress, setProgress] = useState(null)
+  const [exportError, setExportError] = useState('')
   const [error, setError] = useState('')
   const [cols, setCols] = useColumnLayout()
   const [showGrid, setShowGrid] = useShowGrid()
+  const [arrangeZoom, nudgeArrangeZoom] = useArrangeZoom()
+  const [previewWrap, setPreviewWrap] = useState(() => {
+    try { return localStorage.getItem(PREVIEW_WRAP_KEY) === '1' } catch { return false }
+  })
+  const [previewCompareReady, setPreviewCompareReady] = useState(false)
+  const [previewCommitReady, setPreviewCommitReady] = useState(false)
+  const previewCompareRef = useRef(null)
+  const [maskImage, setMaskImage] = useState(null)
+  const [showMask, setShowMask] = useState(false)
+  const [maskInvert, setMaskInvert] = useState(false)
+  const [maskHalfOpacity, setMaskHalfOpacity] = useState(true)
+  const [maskFit, setMaskFit] = useState(() => {
+    try {
+      const v = localStorage.getItem(MASK_FIT_KEY)
+      return v === 'cover' ? 'cover' : 'contain'
+    } catch { return 'contain' }
+  })
+  const maskFileRef = useRef(null)
   const [arrangeView, setArrangeView] = useState('original')
+  const [arrangeBusy, setArrangeBusy] = useState(false)
+  const [arrangeStatus, setArrangeStatus] = useState('')
+  const [arrangeProgress, setArrangeProgress] = useState(null) // { done, total, filename }
+  const [leadHover, setLeadHover] = useState(false)
+  const [arrangeSelected, setArrangeSelected] = useState(() => new Set())
+  const arrangeAnchorRef = useRef(null)
+  const [arrangeDragging, setArrangeDragging] = useState(null)
+  const [compareA, setCompareA] = useState('original')
+  const [compareB, setCompareB] = useState('1')
+  const [compareShow, setCompareShow] = useState('a') // 'a' | 'b'
   const workspaceRef = useRef(null)
   const colsRef = useRef(cols)
   const dragOrigin = useRef(cols)
@@ -842,9 +1311,43 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
 
   useEffect(() => {
+    try { localStorage.setItem(MASK_FIT_KEY, maskFit) } catch { /* ignore */ }
+  }, [maskFit])
+
+  useEffect(() => {
+    try { localStorage.setItem(PREVIEW_WRAP_KEY, previewWrap ? '1' : '0') } catch { /* ignore */ }
+  }, [previewWrap])
+
+  useEffect(() => {
     // Drop any pending tied to another image when selection changes.
     setPending((p) => (p && p.index != null && p.index !== session.current_idx ? null : p))
   }, [session.current_idx])
+
+  useEffect(() => {
+    const name = session.images[session.current_idx]?.filename
+    if (!name) return
+    setArrangeSelected((prev) => {
+      if (prev.size <= 1) return new Set([name])
+      if (prev.has(name)) return prev
+      return new Set([name])
+    })
+  }, [session.current_idx])
+
+  useEffect(() => {
+    if (tab !== 'preview') {
+      setPreviewCompareReady(false)
+      setPreviewCommitReady(false)
+      return undefined
+    }
+    const tick = () => {
+      const api = previewCompareRef.current
+      setPreviewCompareReady(Boolean(api?.canToggle))
+      setPreviewCommitReady(Boolean(api?.canCommit))
+    }
+    tick()
+    const id = window.setInterval(tick, 200)
+    return () => window.clearInterval(id)
+  }, [tab, session.current_idx])
 
   const ids = useMemo(() => session.images.map((im) => im.filename), [session])
 
@@ -879,10 +1382,124 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
     if (nextTab === tab) return
     try {
       if (pendingRef.current || previewDraftRef.current) await flushPending()
+      if (tab === 'arrange' && nextTab !== 'arrange') {
+        const left = await api.arrangeLeave({ commit: true })
+        setSession(left)
+      }
       setTab(nextTab)
     } catch (err) {
       setError(err.message)
     }
+  }
+
+  const applyTarget = async (w, h) => {
+    try {
+      await flushPending()
+      apply(await api.setTarget({ target_width: Number(w), target_height: Number(h) }))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const runAutoArrange = async (mode, extra = {}) => {
+    const busyMsg = {
+      color: 'Sorting by color…',
+      depth: extra.near_to_far === false ? 'Sorting depth far→near…' : 'Sorting depth near→far…',
+      lead: 'Matching lead image…',
+      faces: 'Sorting by faces…',
+    }[mode] || 'Arranging…'
+    setArrangeBusy(true)
+    setArrangeStatus(busyMsg)
+    setArrangeProgress({ done: 0, total: session.total || 1, filename: '' })
+    setError('')
+    try {
+      const res = await api.arrangeAuto({ mode, ...extra })
+      const next = await readSse(res, (ev) => {
+        if (ev.phase === 'start' || ev.phase === 'progress') {
+          setArrangeProgress({
+            done: ev.done ?? 0,
+            total: ev.total || session.total || 1,
+            filename: ev.filename || '',
+          })
+          if (ev.filename && !String(ev.filename).endsWith('…')) {
+            setArrangeStatus(`${busyMsg.replace(/…$/, '')} · ${ev.done}/${ev.total}`)
+          } else if (ev.filename) {
+            setArrangeStatus(String(ev.filename))
+          }
+        }
+        if (ev.phase === 'error' || ev.error) {
+          setError(ev.error || 'AutoArrange failed')
+        }
+      })
+      if (!next || next.phase === 'error' || next.error) {
+        throw new Error(next?.error || 'AutoArrange failed')
+      }
+      apply(next)
+      const slot = next.auto_result?.slot
+      const labels = next.auto_result?.labels
+      const labelHint = Array.isArray(labels) && labels.length
+        ? ` · ${labels.slice(0, 3).map((l) => (Array.isArray(l) ? l[0] : l)).join(', ')}${labels.length > 3 ? '…' : ''}`
+        : ''
+      setArrangeStatus(slot ? `Saved to slot ${slot}${labelHint}` : `Done${labelHint}`)
+      setArrangeProgress(null)
+      window.setTimeout(() => setArrangeStatus((s) => (s.startsWith('Saved') || s.startsWith('Done') ? '' : s)), 2800)
+    } catch (err) {
+      setError(err.message)
+      setArrangeStatus('')
+      setArrangeProgress(null)
+    } finally {
+      setArrangeBusy(false)
+    }
+  }
+
+  const homeFocal = async () => {
+    const im = session.images[session.current_idx]
+    if (!im) return
+    const pt = {
+      x: im.width / 2,
+      y: im.height / 2,
+      autoCenter: true,
+      cropScale: DEFAULT_CROP_SCALE,
+      index: im.id,
+    }
+    setPending(pt)
+  }
+
+  const onMaskFile = (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const url = URL.createObjectURL(file)
+    const image = new Image()
+    image.onload = () => {
+      setMaskImage(image)
+      setShowMask(true)
+    }
+    image.onerror = () => setError('Could not load mask image')
+    image.src = url
+    e.target.value = ''
+  }
+
+  const recallSlot = async (slot) => {
+    try {
+      apply(await api.arrangeRecall({ slot: String(slot) }))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const reverseArrange = async () => {
+    setError('')
+    try {
+      apply(await api.arrangeReverse())
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  const toggleCompare = async () => {
+    const slot = compareShow === 'a' ? compareB : compareA
+    setCompareShow(compareShow === 'a' ? 'b' : 'a')
+    await recallSlot(slot === '0' ? 'original' : slot)
   }
 
   const goTo = async (index, { wrap = false } = {}) => {
@@ -892,11 +1509,14 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
   }
 
   const step = async (direction) => {
-    const atStart = session.current_idx <= 0 && direction < 0
-    const atEnd = session.current_idx >= session.total - 1 && direction > 0
-    if (atStart || atEnd) return
+    const wrap = tab === 'preview' && previewWrap
+    if (!wrap) {
+      const atStart = session.current_idx <= 0 && direction < 0
+      const atEnd = session.current_idx >= session.total - 1 && direction > 0
+      if (atStart || atEnd) return
+    }
     await flushPending()
-    apply(await api.navigate({ direction, wrap: false }))
+    apply(await api.navigate({ direction, wrap }))
   }
 
   const confirmPt = async (pt) => {
@@ -935,6 +1555,15 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
     }
   }
 
+  const duplicateCurrent = async () => {
+    try {
+      await flushPending()
+      apply(await api.duplicate())
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   const onKey = useCallback(async (e) => {
     if (exportOpen) return
     if (resetOpen) {
@@ -946,8 +1575,16 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
     }
     if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
     const k = e.key
+    if (!hotkeyAllowed(tab, k)) return
     try {
       if (k === 'Enter') {
+        if (tab === 'preview') {
+          e.preventDefault()
+          const api = previewCompareRef.current
+          if (!session.images[session.current_idx]?.focal) api?.nudgeNeedFocal?.()
+          else api?.commit?.()
+          return
+        }
         const img = session.images[session.current_idx]
         await confirmPt(focalFromImage(img, pending))
       } else if (k === ' ') {
@@ -960,26 +1597,42 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
         e.preventDefault()
         await step(-1)
       } else if (k === 'x' || k === 'X') await discardCurrent()
-      else if (k === 'Delete' || k === 'Backspace') apply(await api.clearFocal(session.current_idx))
+      else if (k === 'd' || k === 'D') {
+        e.preventDefault()
+        await duplicateCurrent()
+      } else if (k === 'Delete' || k === 'Backspace') apply(await api.clearFocal(session.current_idx))
       else if (k === 'p' || k === 'P') await switchTab(tab === 'preview' ? 'original' : 'preview')
       else if (k === 'o' || k === 'O') {
         const mode = session.alignment_mode === 'portrait' ? 'landscape' : 'portrait'
         apply(await api.setMode(mode))
       } else if (k === 'a' || k === 'A') await switchTab(tab === 'arrange' ? 'original' : 'arrange')
-      else if (k === '[') {
-        await flushPending()
-        apply(await api.shift(-1))
-      } else if (k === ']') {
-        await flushPending()
-        apply(await api.shift(1))
+      else if (k === 'h' || k === 'H') {
+        e.preventDefault()
+        await homeFocal()
       } else if (k === 'r' || k === 'R') setResetOpen(true)
-      else if (k === 'g' || k === 'G') setShowGrid((v) => !v)
-      else if (k === 'f' || k === 'F') setExportOpen(true)
-      else if (k === 'Escape') onFinished()
+      else if (k === 'g' || k === 'G') {
+        e.preventDefault()
+        setShowGrid((v) => !v)
+      } else if (k === 'i' || k === 'I') {
+        e.preventDefault()
+        if (maskImage) setShowMask((v) => !v)
+      }       else if (k === 'e' || k === 'E') setExportOpen(true)
+      else if (k === 'c' || k === 'C') {
+        e.preventDefault()
+        if (tab === 'arrange') await toggleCompare()
+        else if (tab === 'preview') {
+          const api = previewCompareRef.current
+          if (!session.images[session.current_idx]?.focal) api?.nudgeNeedFocal?.()
+          else api?.toggle?.()
+        }
+      } else if (/^[0-9]$/.test(k)) {
+        e.preventDefault()
+        await recallSlot(k === '0' ? 'original' : k)
+      } else if (k === 'Escape') onFinished()
     } catch (err) {
       setError(err.message)
     }
-  }, [session, pending, tab, exportOpen, resetOpen, resetting, onFinished, setShowGrid])
+  }, [session, pending, tab, exportOpen, resetOpen, resetting, onFinished, setShowGrid, compareA, compareB, compareShow, maskImage, previewWrap])
 
   useEffect(() => {
     window.addEventListener('keydown', onKey)
@@ -1021,17 +1674,33 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
     setCols(next.map((n) => (n / sum) * 100))
   }
 
+  async function onDragStart(event) {
+    const id = event.active.id
+    setArrangeDragging(id)
+    setArrangeSelected((prev) => {
+      if (prev.has(id)) return prev
+      arrangeAnchorRef.current = id
+      return new Set([id])
+    })
+  }
+
   async function onDragEnd(event) {
     const { active, over } = event
+    setArrangeDragging(null)
     if (!over || active.id === over.id) return
-    const oldIndex = session.images.findIndex((im) => im.filename === active.id)
-    const newIndex = session.images.findIndex((im) => im.filename === over.id)
-    if (oldIndex < 0 || newIndex < 0) return
-    const order = arrayMove(session.images.map((_, i) => i), oldIndex, newIndex)
+    const names = session.images.map((im) => im.filename)
+    const selected = arrangeSelected.has(active.id)
+      ? arrangeSelected
+      : new Set([active.id])
+    const nextNames = reorderMulti(names, selected, active.id, over.id)
+    if (nextNames.every((n, i) => n === names[i])) return
+    const nameToOldIndex = Object.fromEntries(names.map((n, i) => [n, i]))
+    const order = nextNames.map((n) => nameToOldIndex[n])
     const currentName = session.images[session.current_idx]?.filename
-    const optimistic = arrayMove(session.images, oldIndex, newIndex).map((im, i) => ({ ...im, id: i }))
+    const optimistic = nextNames.map((n) => session.images[nameToOldIndex[n]]).map((im, i) => ({ ...im, id: i }))
     const newCurrent = Math.max(0, optimistic.findIndex((im) => im.filename === currentName))
     setSession({ ...session, images: optimistic, current_idx: newCurrent })
+    setArrangeSelected(new Set(selected))
     try {
       apply(await api.order(order))
     } catch (err) {
@@ -1040,25 +1709,75 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
     }
   }
 
+  async function onArrangeSelect(e, id, filename) {
+    const names = session.images.map((im) => im.filename)
+    const idx = names.indexOf(filename)
+    if (e.metaKey || e.ctrlKey) {
+      setArrangeSelected((prev) => {
+        const next = new Set(prev)
+        if (next.has(filename)) {
+          if (next.size > 1) next.delete(filename)
+        } else {
+          next.add(filename)
+        }
+        return next
+      })
+      arrangeAnchorRef.current = filename
+    } else if (e.shiftKey) {
+      const anchor = arrangeAnchorRef.current || session.images[session.current_idx]?.filename
+      const a = names.indexOf(anchor)
+      const from = Math.min(a < 0 ? idx : a, idx)
+      const to = Math.max(a < 0 ? idx : a, idx)
+      setArrangeSelected(new Set(names.slice(from, to + 1)))
+    } else {
+      setArrangeSelected(new Set([filename]))
+      arrangeAnchorRef.current = filename
+    }
+    try {
+      await flushPending()
+      apply(await api.navigate({ index: id }))
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   async function runExport(orientation) {
     setExporting(true)
+    setExportDone(false)
+    setExportError('')
     setError('')
+    setProgress({ done: 0, total: session.total, phase: 'start' })
     try {
       const res = await api.export({
         output_folder: session.output_folder,
         orientation,
         cleanup: true,
       })
-      const text = await res.text()
-      const lines = text.split('\n').filter((l) => l.startsWith('data: '))
-      const last = lines.length ? JSON.parse(lines[lines.length - 1].slice(6)) : {}
+      const last = await readSse(res, (ev) => {
+        setProgress(ev)
+        if (ev.phase === 'error' || ev.error) {
+          setExportError(ev.error || 'Export failed')
+        }
+      })
+      if (!last || last.phase === 'error' || last.error) {
+        throw new Error(last?.error || exportError || 'Export failed')
+      }
       setProgress(last)
-      setTimeout(() => onFinished(), 400)
+      setExportDone(true)
     } catch (e) {
+      setExportError(e.message)
       setError(e.message)
     } finally {
       setExporting(false)
     }
+  }
+
+  function finishAfterExport() {
+    setExportOpen(false)
+    setExportDone(false)
+    setProgress(null)
+    setExportError('')
+    onFinished()
   }
 
   return (
@@ -1068,8 +1787,8 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
           <h2>{img?.filename}</h2>
           <div className="status">
             {session.current_idx + 1}/{session.total} · {session.alignment_mode}
+            {' · '}{session.target_width}×{session.target_height}
           </div>
-          <ImageFacts img={img} pending={pending} />
           <div className="focal-progress" title={`${session.completed_count} of ${session.total} have a focal point`}>
             <div className="focal-progress-bar"><div style={{ width: `${focalPct}%` }} /></div>
             <span>{session.completed_count}/{session.total} focals</span>
@@ -1080,19 +1799,50 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
           <button aria-selected={tab === 'preview'} onClick={() => switchTab('preview')}>Preview</button>
           <button aria-selected={tab === 'arrange'} onClick={() => switchTab('arrange')}>Arrange</button>
         </div>
-        <div className="row">
-          <button
-            type="button"
-            className="secondary"
-            aria-pressed={showGrid}
-            title="Toggle rule-of-thirds grid (G)"
-            onClick={() => setShowGrid((v) => !v)}
-          >
-            Grid {showGrid ? 'On' : 'Off'}
-          </button>
-          <button className="secondary" onClick={() => setExportOpen(true)}>Export (F)</button>
+        <div className="row header-actions">
+          {tab === 'original' && (
+            <button
+              type="button"
+              className="secondary"
+              title="Duplicate current image after this one (D)"
+              onClick={() => duplicateCurrent().catch((err) => setError(err.message))}
+            >
+              Duplicate (D)
+            </button>
+          )}
+          <button className="secondary" disabled={exporting} onClick={() => { setExportOpen(true); setExportDone(false); setProgress(null); setExportError('') }}>Export</button>
           <button className="secondary" onClick={onFinished}>Done</button>
         </div>
+      </div>
+
+      <div className="action-bar">
+        <SizePanel
+          width={session.target_width}
+          height={session.target_height}
+          onApply={applyTarget}
+        />
+        <OverlayPanel
+          showGrid={showGrid}
+          setShowGrid={setShowGrid}
+          maskImage={maskImage}
+          showMask={showMask}
+          setShowMask={setShowMask}
+          maskInvert={maskInvert}
+          setMaskInvert={setMaskInvert}
+          maskHalfOpacity={maskHalfOpacity}
+          setMaskHalfOpacity={setMaskHalfOpacity}
+          maskFit={maskFit}
+          setMaskFit={setMaskFit}
+          onPickMask={() => maskFileRef.current?.click()}
+        />
+        <input
+          ref={maskFileRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={onMaskFile}
+        />
+        <ImageFacts img={img} pending={pending} />
       </div>
 
       {tab === 'original' && (
@@ -1110,6 +1860,11 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
             onConfirm={confirmPt}
             onDiscard={() => discardCurrent().catch((err) => setError(err.message))}
             showGrid={showGrid}
+            maskImage={maskImage}
+            showMask={showMask}
+            maskInvert={maskInvert}
+            maskHalfOpacity={maskHalfOpacity}
+            maskFit={maskFit}
           />
           <SplitHandle onBegin={() => { dragOrigin.current = colsRef.current }} onDrag={(dx) => dragSplit('right', dx)} />
           <SidePane img={nextImg} label="Next" onOpen={() => goTo(session.current_idx + 1)} />
@@ -1123,19 +1878,161 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
           onError={(msg) => setError(msg)}
           showGrid={showGrid}
           draftFlushRef={previewDraftRef}
+          maskImage={maskImage}
+          showMask={showMask}
+          maskInvert={maskInvert}
+          maskHalfOpacity={maskHalfOpacity}
+          maskFit={maskFit}
+          wrapNav={previewWrap}
+          setWrapNav={setPreviewWrap}
+          compareApiRef={previewCompareRef}
         />
       )}
 
       {tab === 'arrange' && (
         <div className="workspace arrange">
           <div className="arrange-toolbar">
-            <button type="button" aria-selected={arrangeView === 'original'} onClick={() => setArrangeView('original')}>Original</button>
-            <button type="button" aria-selected={arrangeView === 'aligned'} onClick={() => setArrangeView('aligned')}>Aligned</button>
-            <span className="muted">{arrangeView === 'original' ? 'Before focal crop' : 'After aligned crop'}</span>
+            <div className="arrange-toolbar-row">
+              <div className="arrange-toolbar-left">
+                <button type="button" aria-selected={arrangeView === 'original'} onClick={() => setArrangeView('original')}>Original</button>
+                <button type="button" aria-selected={arrangeView === 'aligned'} onClick={() => setArrangeView('aligned')}>Aligned</button>
+                <span className="muted">{arrangeView === 'original' ? 'Before focal crop' : 'After aligned crop'}</span>
+              </div>
+              <div className="arrange-toolbar-center">
+                <div className="arrange-auto-actions">
+                  {(arrangeBusy || arrangeStatus) && (
+                    <div className={`arrange-progress-float${arrangeBusy ? ' busy' : ' done'}`} role="status">
+                      <div className="arrange-progress-label">
+                        {arrangeBusy ? (arrangeStatus || 'Working…') : arrangeStatus}
+                      </div>
+                      {arrangeBusy && arrangeProgress && (
+                        <div className="arrange-progress-track">
+                          <div
+                            className="arrange-progress-bar"
+                            style={{
+                              width: `${Math.min(100, (100 * (arrangeProgress.done || 0)) / Math.max(1, arrangeProgress.total || 1))}%`,
+                            }}
+                          />
+                        </div>
+                      )}
+                      {arrangeBusy && arrangeProgress && (
+                        <div className="arrange-progress-meta muted">
+                          {arrangeProgress.done}/{arrangeProgress.total}
+                          {arrangeProgress.filename && !String(arrangeProgress.filename).endsWith('…')
+                            ? ` · ${arrangeProgress.filename}`
+                            : arrangeProgress.filename
+                              ? ` · ${arrangeProgress.filename}`
+                              : ''}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="arrange-auto-buttons">
+                    <button type="button" className="secondary" disabled={arrangeBusy} onClick={() => runAutoArrange('color')}>Color</button>
+                    <button type="button" className="secondary" disabled={arrangeBusy} onClick={() => runAutoArrange('depth', { near_to_far: true })}>Depth near→far</button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={arrangeBusy}
+                      title="Uses the selected thumbnail as the ORB lead — hover to highlight it"
+                      onMouseEnter={() => setLeadHover(true)}
+                      onMouseLeave={() => setLeadHover(false)}
+                      onFocus={() => setLeadHover(true)}
+                      onBlur={() => setLeadHover(false)}
+                      onClick={() => runAutoArrange('lead', { lead_index: session.current_idx, axis: 'x' })}
+                    >
+                      Lead match
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={arrangeBusy}
+                      title="Sorts left→right by largest detected face center"
+                      onClick={() => runAutoArrange('faces')}
+                    >
+                      Faces
+                    </button>
+                    <button
+                      type="button"
+                      className={session.arrangement_reversed ? '' : 'secondary'}
+                      aria-selected={Boolean(session.arrangement_reversed)}
+                      disabled={arrangeBusy || session.total < 2}
+                      title={session.arrangement_reversed ? 'Order is reversed — click to restore' : 'Reverse current order in place (updates active slot)'}
+                      onClick={() => reverseArrange()}
+                    >
+                      Reverse
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="arrange-toolbar-right">
+                <span className="muted">Zoom</span>
+                <button type="button" className="secondary" onClick={() => nudgeArrangeZoom(-0.1)} title="Smaller thumbs">−</button>
+                <span className="muted">{Math.round(arrangeZoom * 100)}%</span>
+                <button type="button" className="secondary" onClick={() => nudgeArrangeZoom(0.1)} title="Larger thumbs">+</button>
+              </div>
+            </div>
+            <div className="arrange-toolbar-row">
+              <div className="arrange-toolbar-left">
+                <label className="muted arrange-compare">
+                  Compare
+                  <select value={compareA} onChange={(e) => setCompareA(e.target.value)}>
+                    {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((s) => (
+                      <option key={`a-${s}`} value={s}>{s === 'original' ? 'Original' : s}</option>
+                    ))}
+                  </select>
+                  vs
+                  <select value={compareB} onChange={(e) => setCompareB(e.target.value)}>
+                    {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((s) => (
+                      <option key={`b-${s}`} value={s}>{s === 'original' ? 'Original' : s}</option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" className="secondary" onClick={toggleCompare}>
+                  Show {compareShow === 'a' ? compareB : compareA} (C)
+                </button>
+              </div>
+              <div className="arrange-toolbar-right">
+                <span className="muted">Slots</span>
+                {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((slot) => {
+                  const filled = slot === 'original' || Boolean(session.arrangements?.[slot])
+                  const active = (session.arrangement_active || 'original') === slot
+                  return (
+                    <button
+                      key={slot}
+                      type="button"
+                      className={active ? '' : 'secondary'}
+                      disabled={!filled}
+                      title={slot === 'original' ? 'Original (0)' : `Slot ${slot}`}
+                      onClick={() => recallSlot(slot)}
+                    >
+                      {slot === 'original' ? 'Orig' : slot}
+                    </button>
+                  )
+                })}
+                <details className="arrange-info">
+                  <summary className="arrange-info-btn" title="How AutoArrange works" aria-label="AutoArrange info">ⓘ</summary>
+                  <div className="arrange-info-panel" role="note">
+                    <p><strong>Color</strong> — groups by HSV buckets (white / gray / black / hue).</p>
+                    <p><strong>Depth near→far</strong> — Depth-Anything estimate; use Reverse for far→near.</p>
+                    <p><strong>Lead match</strong> — ORB feature match against the selected thumbnail (hover Lead to see which).</p>
+                    <p><strong>Faces</strong> — left→right by detected face centers (YuNet).</p>
+                    <p><strong>Reverse</strong> — flips the active slot’s order in place (button stays lit while reversed).</p>
+                    <p><strong>Slots 0–9</strong> — store and recall arrangements; leaving Arrange commits a manual draft.</p>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
-          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            onDragCancel={() => setArrangeDragging(null)}
+          >
             <SortableContext items={ids} strategy={rectSortingStrategy}>
-              <div className="grid">
+              <div className={`grid${leadHover ? ' lead-hover' : ''}`} style={{ '--arrange-zoom': arrangeZoom }}>
                 {session.images.map((im) => (
                   <SortableThumb
                     key={im.filename}
@@ -1143,20 +2040,27 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
                     img={im}
                     view={arrangeView}
                     orientation={session.alignment_mode}
-                    selected={im.id === session.current_idx}
-                    onSelect={async (id) => {
-                      try {
-                        await flushPending()
-                        apply(await api.navigate({ index: id }))
-                      } catch (err) {
-                        setError(err.message)
-                      }
-                    }}
+                    targetW={session.target_width}
+                    targetH={session.target_height}
+                    selected={arrangeSelected.has(im.filename)}
+                    current={im.id === session.current_idx}
+                    multiCount={arrangeDragging === im.filename ? arrangeSelected.size : 0}
+                    onSelect={onArrangeSelect}
                     onOpen={async (id) => {
                       try {
                         await flushPending()
                         apply(await api.navigate({ index: id }))
                         setTab('original')
+                      } catch (err) {
+                        setError(err.message)
+                      }
+                    }}
+                    onDiscard={async (id) => {
+                      try {
+                        await flushPending()
+                        const next = await api.discard(id)
+                        if (next.empty) onFinished()
+                        else apply(next)
                       } catch (err) {
                         setError(err.message)
                       }
@@ -1175,17 +2079,58 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
 
       <div className="hotkeys">
         <Hotkey kbd="← →" label="Navigate" onClick={() => step(1)} />
-        <Hotkey kbd="Enter" label="Save" onClick={async () => { try { await confirmPt(focalFromImage(img, pending)) } catch (err) { setError(err.message) } }} />
-        <Hotkey kbd="Space" label="Skip" onClick={() => step(1)} />
+        {tab === 'original' && (
+          <>
+            <Hotkey kbd="Enter" label="Save" onClick={async () => { try { await confirmPt(focalFromImage(img, pending)) } catch (err) { setError(err.message) } }} />
+            <Hotkey kbd="Space" label="Skip" onClick={() => step(1)} />
+            <Hotkey kbd="D" label="Duplicate" onClick={() => duplicateCurrent().catch((err) => setError(err.message))} />
+          </>
+        )}
         <Hotkey kbd="X / ⇧MMB" label="Discard" danger onClick={() => discardCurrent().catch((err) => setError(err.message))} />
-        <Hotkey kbd="Del" label="Clear" onClick={async () => { try { apply(await api.clearFocal(session.current_idx)) } catch (err) { setError(err.message) } }} />
+        {tab === 'original' && (
+          <Hotkey kbd="Del" label="Clear" onClick={async () => { try { apply(await api.clearFocal(session.current_idx)) } catch (err) { setError(err.message) } }} />
+        )}
         <Hotkey kbd="P" label="Preview" onClick={() => switchTab(tab === 'preview' ? 'original' : 'preview')} />
         <Hotkey kbd="O" label="Orient" onClick={async () => { try { apply(await api.setMode(session.alignment_mode === 'portrait' ? 'landscape' : 'portrait')) } catch (err) { setError(err.message) } }} />
         <Hotkey kbd="A" label="Arrange" onClick={() => switchTab(tab === 'arrange' ? 'original' : 'arrange')} />
-        <Hotkey kbd="[ ]" label="Reorder" onClick={async () => { try { await flushPending(); apply(await api.shift(1)) } catch (err) { setError(err.message) } }} />
-        <Hotkey kbd="G" label="Grid" onClick={() => setShowGrid((v) => !v)} />
+        {tab === 'original' && (
+          <>
+            <Hotkey kbd="H" label="Home" onClick={() => homeFocal().catch((err) => setError(err.message))} />
+            <Hotkey kbd="G" label="Grid" onClick={() => setShowGrid((v) => !v)} />
+            <Hotkey
+              kbd="I"
+              label="Mask"
+              onClick={() => { if (maskImage) setShowMask((v) => !v) }}
+            />
+          </>
+        )}
+        {tab === 'preview' && (
+          <>
+            <Hotkey
+              kbd="Enter"
+              label="Commit"
+              disabled={!previewCommitReady && Boolean(img?.focal)}
+              onClick={() => {
+                if (!img?.focal) previewCompareRef.current?.nudgeNeedFocal?.()
+                else previewCompareRef.current?.commit?.()
+              }}
+            />
+            <Hotkey
+              kbd="C"
+              label="Compare"
+              disabled={!previewCompareReady && Boolean(img?.focal)}
+              onClick={() => {
+                if (!img?.focal) previewCompareRef.current?.nudgeNeedFocal?.()
+                else previewCompareRef.current?.toggle?.()
+              }}
+            />
+          </>
+        )}
+        {tab === 'arrange' && (
+          <Hotkey kbd="C" label="Compare" onClick={() => toggleCompare().catch((err) => setError(err.message))} />
+        )}
         <Hotkey kbd="R" label="Reset" danger onClick={() => setResetOpen(true)} />
-        <Hotkey kbd="F" label="Export" onClick={() => setExportOpen(true)} />
+        <Hotkey kbd="E" label="Export" onClick={() => setExportOpen(true)} />
         <Hotkey kbd="Esc" label={batchMode ? 'Next folder' : 'Opener'} onClick={onFinished} />
       </div>
 
@@ -1208,18 +2153,45 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
       )}
 
       {exportOpen && (
-        <div className="export-overlay" onClick={() => !exporting && setExportOpen(false)}>
+        <div className="export-overlay" onClick={() => !exporting && !exportDone && setExportOpen(false)}>
           <div className="export-card card" onClick={(e) => e.stopPropagation()}>
-            <h2>Export aligned images</h2>
-            <p className="muted">{session.completed_count}/{session.total} have focals → {session.output_folder}</p>
-            <div className="row" style={{ marginTop: 16 }}>
-              <button disabled={exporting} onClick={() => runExport('landscape')}>Landscape</button>
-              <button disabled={exporting} className="secondary" onClick={() => runExport('portrait')}>Portrait</button>
-            </div>
-            {progress && (
+            <h2>{exportDone ? 'Export complete' : exporting ? 'Exporting…' : 'Export aligned images'}</h2>
+            <p className="muted">
+              {session.completed_count}/{session.total} have focals → {session.output_folder}
+            </p>
+            {!exportDone && (
+              <div className="row" style={{ marginTop: 16 }}>
+                <button disabled={exporting} onClick={() => runExport('landscape')}>Landscape</button>
+                <button disabled={exporting} className="secondary" onClick={() => runExport('portrait')}>Portrait</button>
+              </div>
+            )}
+            {(exporting || progress) && (
               <div style={{ marginTop: 16 }}>
-                <div className="progress"><div style={{ width: `${(100 * (progress.done || 0)) / (progress.total || 1)}%` }} /></div>
-                <p className="muted">{progress.exported ?? progress.done} written</p>
+                <div className="progress">
+                  <div style={{ width: `${(100 * (progress?.done || 0)) / (progress?.total || session.total || 1)}%` }} />
+                </div>
+                <p className="muted" style={{ marginTop: 8 }}>
+                  {exportDone
+                    ? `${progress?.exported ?? progress?.done ?? 0} of ${progress?.total ?? session.total} written`
+                    : exporting
+                      ? `${progress?.done || 0}/${progress?.total || session.total}${progress?.filename ? ` · ${progress.filename}` : ''}`
+                      : null}
+                </p>
+                {exportDone && progress?.output_folder && (
+                  <p className="ok" style={{ marginTop: 8 }}>Saved to {progress.output_folder}</p>
+                )}
+              </div>
+            )}
+            {exportError && <p className="error" style={{ marginTop: 12 }}>{exportError}</p>}
+            {exportDone && (
+              <div className="row" style={{ marginTop: 16 }}>
+                <button onClick={finishAfterExport}>{batchMode ? 'Next folder' : 'Back to opener'}</button>
+                <button className="secondary" onClick={() => { setExportOpen(false); setExportDone(false); setProgress(null) }}>Stay</button>
+              </div>
+            )}
+            {!exportDone && !exporting && (
+              <div className="row" style={{ marginTop: 12 }}>
+                <button className="secondary" onClick={() => setExportOpen(false)}>Cancel</button>
               </div>
             )}
           </div>
