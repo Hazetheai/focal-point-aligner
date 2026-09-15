@@ -27,6 +27,7 @@ export default defineConfig({
       '/export': api,
       '/media': api,
       '/batch': api,
+      '/dialog': { target: api, timeout: 600000 },
     },
   },
 })

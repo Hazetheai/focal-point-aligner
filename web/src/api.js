@@ -54,12 +54,21 @@ export function mediaUrl(kind, idx, extra = '') {
   return `${API_BASE}/media/${kind}/${idx}${extra}`
 }
 
-export async function pickFolder() {
+export async function pickFolder(title = 'Select folder') {
   if (isTauri()) {
-    const { open } = await import('@tauri-apps/plugin-dialog')
-    return open({ directory: true, multiple: false })
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog')
+      const path = await open({ directory: true, multiple: false, title })
+      if (path) return path
+    } catch {
+      /* fall through to the local API picker */
+    }
   }
-  return null
+  const data = await req('/dialog/folder', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  })
+  return data.path || null
 }
 
 export function isTauriApp() {

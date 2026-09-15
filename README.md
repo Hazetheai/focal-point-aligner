@@ -19,13 +19,15 @@ Equivalent: `./dev.sh`
 ## How it works
 
 1. Pick an input folder (and optional output folder) → set target width/height → **Start**.
-2. **Original** tab: click to set a focal point. **Enter** or double-click saves and goes to the next image. **X** discards.
-3. **Preview** tab: the aligned crop of the same image.
-4. **Arrange** tab: drag thumbnails to set export order. The selected image is the one Original/Preview show.
+2. **Original** tab: click to set a focal point. **Enter** or double-click saves and goes to the next image. **X** / middle-click discards. Prev / current / next columns are resizable (current larger by default). **Details** expands image metadata; the path expands on first click and copies on the second.
+3. **Preview** tab: the aligned crop of the same image. If no focal is set yet, it shows the original instead of inventing one.
+4. **Arrange** tab: drag thumbnails to set export order. Toggle **Original** / **Aligned** thumbs. The selected image is the one Original/Preview show.
 5. **F** (or Export) writes `{0000,0001,...}.jpg` into the output folder.
 6. **Esc** returns to the opener so you can process another folder.
 
-Cropping is straightforward: the focal point is centered in the output (clamped at edges). Large photos take a native-pixel crop of the target size; small photos are scaled up to fill the frame. EXIF orientation is applied so the click matches the pixels that get cropped.
+Cropping is straightforward: the focal point is centered in the output (clamped at edges). Large photos take a native-pixel crop of the target size; small photos are scaled up to fill the frame. A click shows that keep-region as a dim overlay with a white border. EXIF orientation is applied so the click matches the pixels that get cropped.
+
+Browse always opens a **folder** picker (not files). Nav dots are pages of 10; unset / focal-set / center states are color-coded.
 
 ## Keyboard
 
@@ -33,7 +35,9 @@ Cropping is straightforward: the focal point is centered in the output (clamped 
 |-----|--------|
 | Enter | Save focal and go to next |
 | Space / ← → | Skip / navigate (stops at the ends) |
-| X | Discard current image |
+| X / middle click | Discard current image |
+| Right click | Pending focal at image center |
+| Right double-click | Save center focal and go to next |
 | Del | Clear focal |
 | P | Preview tab |
 | O | Landscape / portrait |

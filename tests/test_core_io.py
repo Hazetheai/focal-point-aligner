@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from aligner_core import FocalPointAlignerCore, probe_image_size
+from aligner_core import FocalPointAlignerCore, probe_image_meta, probe_image_size
 
 
 def _make_images(img_dir, count=4, size=(1920, 1080)):
@@ -32,6 +32,21 @@ def test_probe_image_size_reads_headers(tmp_path):
     img_dir = tmp_path / "imgs"
     _make_images(img_dir, 1, size=(800, 600))
     assert probe_image_size(img_dir / "image0000.jpg") == (800, 600)
+
+
+def test_probe_image_meta_includes_dpi_and_pixels(tmp_path):
+    from PIL import Image as PILImage
+
+    path = tmp_path / "dpi.jpg"
+    im = PILImage.new("RGB", (640, 480), (10, 20, 30))
+    im.save(path, format="JPEG", dpi=(300, 300), quality=90)
+    meta = probe_image_meta(path)
+    assert meta["width"] == 640
+    assert meta["height"] == 480
+    assert meta["bytes"] > 0
+    assert meta["dpi"] is not None
+    assert abs(meta["dpi"][0] - 300) < 1
+    assert meta["format"] in ("jpeg", "jpg")
 
 
 def test_exif_orientation_matches_displayed_size(tmp_path):
@@ -66,6 +81,15 @@ def test_confirm_and_save_does_not_write_full_res_output(tmp_path):
     leftovers = list((tmp_path / "output").glob("*.jpg"))
     assert leftovers == [], leftovers
     assert core.current_idx == idx_before + 1
+
+
+def test_ensure_preview_does_not_persist_unset_focal(tmp_path):
+    core = _make_core(tmp_path)
+    assert 0 not in core.focal_points
+    assert core.ensure_preview_for_current("landscape") is True
+    assert 0 not in core.focal_points
+    assert not core.auto_center_flags.get(0)
+    assert core.preview_path(core.image_files[0], "landscape").exists()
 
 
 def test_thumb_and_preview_keyed_by_filename(tmp_path):

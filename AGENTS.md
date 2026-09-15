@@ -11,9 +11,9 @@ Current GUI: **React (Vite) + FastAPI**, optional Tauri shell. PyQt6 in `main.py
 Workflow:
 
 1. Opener: pick input folder → target width/height → **Start** (or Batch on a root of subfolders).
-2. **Original**: click focal point; Enter / double-click saves and advances; **X** discards.
-3. **Preview**: aligned crop of the **same** `current_idx` as Original / Arrange.
-4. **Arrange**: drag thumbnails to set export order. Selection follows the file, not the old slot.
+2. **Original**: click focal point; Enter / double-click saves and advances; **X** / middle-click discards. Resizable prev / current / next columns; expandable image facts (path: first click expands, second copies).
+3. **Preview**: aligned crop of the **same** `current_idx` as Original / Arrange. No saved focal → show original; never persist a silent center focal from preview generation.
+4. **Arrange**: drag thumbnails to set export order; **Original** / **Aligned** thumb toggle. Selection follows the file, not the old slot.
 5. **F** / Export writes `{idx:04d}.jpg` to the output folder.
 6. **Esc** (or Done) returns to the opener; in batch mode it opens the next pending folder.
 
@@ -24,6 +24,21 @@ npm run dev
 ```
 
 (`./dev.sh` is the same.) Creates `./venv` if needed, installs Python + `web/` deps, starts FastAPI on **8765**, Vite on **5173**, opens the browser. Requires Node.js and Python 3. Do not tell people to run `main.py` unless they explicitly want the old PyQt app.
+
+Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/folder`, or Tauri when running as a desktop shell). They never pick files. In batch mode, Browse + Refresh load the subfolder queue; Merge / Move aligned / Start Batch use that queue.
+
+## Focal clicks (Original tab)
+
+- Left click = pending focal (crosshair + crop overlay).
+- Double-click or **Enter** = save + advance (`set_focal` then `confirm_and_save`).
+- Switching to Preview with a pending click **saves without advancing** so Preview is the same image.
+- Right click = image center as pending (`auto_center`); right **double-click** confirms that center focal and advances.
+- Middle click = discard current image.
+- Coordinates must come from the **displayed** image (`naturalWidth` / canvas bounding rect), not a stale session size. Python load/probe applies **EXIF orientation** so clicks match `cv2` pixels.
+- After a click, draw a dim overlay **outside** `compute_crop` with a white border so the keep-region (crop or upscale cover) is visible. No zoom-drag overlay.
+- Original stage: show the photo as a visible `<img>`; canvas is a transparent overlay for crosshair/crop only. Do not paint from a `display:none` image (cached loads skip `onLoad` and leave a blank stage).
+- Header filename truncates; tabs stay in a fixed center column so layout does not jump between images.
+- Image facts **Path**: truncated by default; first click expands full path; second click copies; closing Details resets truncation.
 
 ## Stack & tests
 
@@ -39,9 +54,9 @@ npm run dev
 | Path | Role |
 |------|------|
 | `scripts/dev.sh` | GUI launcher used by `npm run dev` |
-| `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge |
+| `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, folder dialog |
 | `web/src/Opener.jsx` | Folder picker, single/batch, merge/move |
-| `web/src/Aligner.jsx` | Original / Preview / Arrange, nav dots, hotkey strip, export overlay |
+| `web/src/Aligner.jsx` | Original / Preview / Arrange (original vs aligned thumbs), nav dots, hotkey strip |
 | `web/src/crop.js` | JS port of `compute_crop` |
 | `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export. No Qt. |
 | `batch.py` | **UI-free batch** — discovery, done-detection, `merge_folders()`, `move_aligned_outputs()` |
@@ -58,6 +73,7 @@ npm run dev
 - `discarded: set[str]` — filenames.
 - `current_idx: int` — shared across Original / Preview / Arrange. Tab switches must not change it.
 - `json_path` = `<output_folder>/focal_points.json`.
+- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`.
 
 ### Persistence (`focal_points.json`)
 
@@ -75,17 +91,11 @@ npm run dev
 4. **Discards** move the file to `<input>/discarded/` and compact all index dicts (no gaps).
 5. Web Arrange uses **filename** as the dnd-kit id (indices remapped 0..n-1 after save). Optimistic reorder then `POST /order`.
 
-## Focal clicks (Original tab)
-
-- Left click = pending focal (crosshair only; no crop overlay).
-- Double-click or **Enter** = save + advance (`set_focal` then `confirm_and_save`).
-- Switching to Preview with a pending click **saves without advancing** so Preview is the same image.
-- Right click = image center as pending.
-- Coordinates must come from the **displayed** image (`naturalWidth` / canvas bounding rect), not a stale session size. Python load/probe applies **EXIF orientation** so clicks match `cv2` pixels.
-
 ## Keyboard
 
 `Enter` save+next · `Space` skip · `←→` navigate (no wrap) · `X` discard · `Del` clear · `P` preview · `O` orientation · `A` arrange · `[`/`]` shift order · `R` reset · `F` export · `Esc` opener / next batch.
+
+Mouse on Original: left click pending · left double save+next · right click center pending · right double center save+next · middle click discard.
 
 ## Image-size framing (crop math)
 
@@ -93,8 +103,16 @@ npm run dev
   - Source ≥ target in both dims: **1:1** crop of `(target_w, target_h)`.
   - Source smaller on either side: scale up just enough to **cover**, then crop.
 - `render_aligned()` crops that rect and resizes to the target. No blur-fill, no max-zoom overlay.
+- After a focal is pending or saved, Original draws that rect as a dim outside-region + white border (not a zoom control).
+- `ensure_preview_for_current` / Arrange aligned thumbs may render with a display-only center when unset, but must **not** write `focal_points` / `auto_center_flags`.
 - `max_zoom` remains on the API/config for compatibility; it does **not** change framing.
 - Tests: `tests/test_crop_math.py` (including “focal lands at output center”).
+
+## Pagination
+
+- Pages of **10** images. Page chips first, then the 10 dots for the current page.
+- Dot states: unset (gray), focal set (green), center/default focal (gray with green core), current (blue).
+- Center = `auto_center` or `focal_at_center` (focal within 1px of image center).
 
 ## Tab / selection sync
 
@@ -134,3 +152,4 @@ npm run dev
 - Crop/reorder/export logic stays in `aligner_core.py` (no Qt, no React).
 - Prefer remapping index dicts from filenames after discard/reorder over ad-hoc UI rebuilds.
 - Keep Original / Preview / Arrange on the same `current_idx`.
+- Preview/media generation must not invent saved focals for unset images.

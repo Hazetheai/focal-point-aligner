@@ -197,21 +197,71 @@ def load_image_safely(img_path):
         return None, "failed"
 
 
-def probe_image_size(img_path):
-    """Return (width, height) from file headers without decoding pixels.
+def _exif_float(value):
+    """Coerce an EXIF rational / int / tuple into a float, or None."""
+    if value is None:
+        return None
+    try:
+        if hasattr(value, "numerator") and hasattr(value, "denominator"):
+            den = float(value.denominator)
+            return float(value.numerator) / den if den else None
+        if isinstance(value, (tuple, list)) and value:
+            if len(value) >= 2 and value[1]:
+                return float(value[0]) / float(value[1])
+            return float(value[0])
+        return float(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
 
-    Uses EXIF orientation so the size matches what a browser displays.
-    Falls back to a full decode only if the header probe fails.
+
+def probe_image_meta(img_path):
+    """Header-only image facts: size, DPI, format, mode, file size.
+
+    Size follows EXIF orientation so it matches the displayed / OpenCV pixels.
     """
+    path = Path(img_path)
+    try:
+        nbytes = path.stat().st_size if path.exists() else 0
+    except OSError:
+        nbytes = 0
+    meta = {
+        "width": 0,
+        "height": 0,
+        "bytes": nbytes,
+        "format": (path.suffix.lstrip(".") or None),
+        "mode": None,
+        "dpi": None,
+        "orientation": 1,
+    }
     if PIL_AVAILABLE:
         try:
-            with Image.open(str(img_path)) as im:
+            with Image.open(str(path)) as im:
                 w, h = im.size
                 orientation = int(im.getexif().get(0x0112, 1) or 1)
                 if orientation in (5, 6, 7, 8):
                     w, h = h, w
-                if w > 0 and h > 0:
-                    return (w, h)
+                meta["width"] = int(w)
+                meta["height"] = int(h)
+                meta["format"] = (im.format or meta["format"] or "").lower() or None
+                meta["mode"] = im.mode
+                meta["orientation"] = orientation
+                dpi = im.info.get("dpi")
+                if dpi:
+                    dx = _exif_float(dpi[0] if isinstance(dpi, (tuple, list)) else dpi)
+                    dy = _exif_float(dpi[1] if isinstance(dpi, (tuple, list)) and len(dpi) > 1 else dx)
+                    if dx:
+                        meta["dpi"] = [round(dx, 2), round(dy or dx, 2)]
+                if meta["dpi"] is None:
+                    exif = im.getexif()
+                    dx = _exif_float(exif.get(282))
+                    dy = _exif_float(exif.get(283))
+                    unit = int(exif.get(296) or 2)
+                    if dx:
+                        if unit == 3:  # pixels per cm
+                            dx, dy = dx * 2.54, (dy or dx) * 2.54
+                        meta["dpi"] = [round(dx, 2), round((dy or dx), 2)]
+                if meta["width"] > 0 and meta["height"] > 0:
+                    return meta
         except Exception:
             pass
     img, _ = load_image_safely(img_path)
@@ -220,7 +270,21 @@ def probe_image_size(img_path):
     h, w = img.shape[:2]
     if h <= 0 or w <= 0:
         return None
-    return (w, h)
+    meta["width"] = int(w)
+    meta["height"] = int(h)
+    return meta
+
+
+def probe_image_size(img_path):
+    """Return (width, height) from file headers without decoding pixels.
+
+    Uses EXIF orientation so the size matches what a browser displays.
+    Falls back to a full decode only if the header probe fails.
+    """
+    meta = probe_image_meta(img_path)
+    if not meta:
+        return None
+    return (meta["width"], meta["height"])
 
 
 class FocalPointAlignerCore:
@@ -286,6 +350,7 @@ class FocalPointAlignerCore:
         
         self.invalid_images = set()
         self.image_dimensions = {}
+        self.image_meta = {}
         self._validate_and_discard_images()
         
         if not self.image_files:
@@ -446,13 +511,14 @@ class FocalPointAlignerCore:
         invalid_indices = []
         
         for idx, img_file in enumerate(self.image_files):
-            size = probe_image_size(img_file)
-            if size is None:
+            meta = probe_image_meta(img_file)
+            if meta is None:
                 logger.warning(f"[VALIDATE] Invalid image (cannot probe): {img_file.name}")
                 invalid_indices.append(idx)
                 self.invalid_images.add(img_file.name)
                 continue
-            self.image_dimensions[idx] = size
+            self.image_dimensions[idx] = (meta["width"], meta["height"])
+            self.image_meta[img_file.name] = meta
         
         if not invalid_indices:
             logger.info(f"[VALIDATE] All {len(self.image_files)} images are valid")
@@ -546,9 +612,11 @@ class FocalPointAlignerCore:
         if dims and dims[0] > 0 and dims[1] > 0:
             return dims
         if 0 <= idx < len(self.image_files):
-            size = probe_image_size(self.image_files[idx])
-            if size:
+            meta = probe_image_meta(self.image_files[idx])
+            if meta:
+                size = (meta["width"], meta["height"])
                 self.image_dimensions[idx] = size
+                self.image_meta[self.image_files[idx].name] = meta
                 return size
         return None
 
@@ -603,12 +671,24 @@ class FocalPointAlignerCore:
         for i, f in enumerate(self.image_files):
             w, h = self.image_dimensions.get(i, (0, 0))
             focal = self.focal_points.get(i)
+            meta = self.image_meta.get(f.name)
+            if not meta:
+                meta = probe_image_meta(f) or {}
+                if meta:
+                    self.image_meta[f.name] = meta
+                    w, h = meta.get("width") or w, meta.get("height") or h
             images.append({
                 "id": i,
                 "filename": f.name,
                 "path": str(f.resolve()),
                 "width": w,
                 "height": h,
+                "bytes": meta.get("bytes") or 0,
+                "format": meta.get("format"),
+                "mode": meta.get("mode"),
+                "dpi": meta.get("dpi"),
+                "orientation": meta.get("orientation") or 1,
+                "megapixels": round((w * h) / 1_000_000, 2) if w and h else 0,
                 "focal": [focal[0], focal[1]] if focal else None,
                 "completed": i in self.completed,
                 "auto_center": bool(self.auto_center_flags.get(i, False)),
@@ -836,11 +916,8 @@ class FocalPointAlignerCore:
                     if img is not None:
                         h, w = img.shape[:2]
                         focal = (w / 2, h / 2)
-                        with self._preview_generation_lock:
-                            self.focal_points[idx] = focal
-                            self.auto_center_flags[idx] = True
                         consecutive_failures = 0
-                        logger.info(f"[PREVIEW] {img_name}: Auto-centered at {focal}")
+                        logger.info(f"[PREVIEW] {img_name}: Using display-only center at {focal}")
                     else:
                         logger.warning(f"[PREVIEW] {img_name}: Failed to load, skipping")
                         with self._preview_generation_lock:
@@ -1043,10 +1120,7 @@ class FocalPointAlignerCore:
             if current_focal is None:
                 dims = self._ensure_dims(idx)
                 if dims:
-                    w, h = dims
-                    current_focal = (w / 2, h / 2)
-                    self.focal_points[idx] = current_focal
-                    self.auto_center_flags[idx] = True
+                    current_focal = (dims[0] / 2, dims[1] / 2)
             
             if current_focal is not None:
                 self.align_single_image(
@@ -1074,26 +1148,23 @@ class FocalPointAlignerCore:
         current_focal = self.focal_points.get(self.current_idx)
         if current_focal is None:
             dims = self._ensure_dims(self.current_idx)
-            if dims:
-                w, h = dims
-                current_focal = (w / 2, h / 2)
-                self.focal_points[self.current_idx] = current_focal
-                self.auto_center_flags[self.current_idx] = True
+            if not dims:
+                return False
+            # Display-only center; do not persist a focal the user never set.
+            current_focal = (dims[0] / 2, dims[1] / 2)
         
-        if current_focal is not None:
-            logger.info(f"[ensure_preview] Generating preview for idx={self.current_idx}")
-            success = self.align_single_image(
-                self.current_idx,
-                self.image_files[self.current_idx],
-                current_focal,
-                self.preview_cache_folder,
-                orientation,
-                output_name=preview_path.name,
-            )
-            with self._preview_generation_lock:
-                self.preview_dirty.discard(self.current_idx)
-            return success
-        return False
+        logger.info(f"[ensure_preview] Generating preview for idx={self.current_idx}")
+        success = self.align_single_image(
+            self.current_idx,
+            self.image_files[self.current_idx],
+            current_focal,
+            self.preview_cache_folder,
+            orientation,
+            output_name=preview_path.name,
+        )
+        with self._preview_generation_lock:
+            self.preview_dirty.discard(self.current_idx)
+        return success
     
     def navigate(self, direction):
         """Navigate to previous/next image."""

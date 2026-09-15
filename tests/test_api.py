@@ -78,6 +78,59 @@ def test_session_roundtrip(client, tmp_path):
     assert r.json()["current_idx"] == 2
 
 
+def test_folder_dialog_returns_directory(client, tmp_path, monkeypatch):
+    folder = tmp_path / "picked"
+    folder.mkdir()
+    monkeypatch.setattr(api_app, "pick_folder_dialog", lambda title="Select folder": str(folder))
+    r = client.post("/dialog/folder", json={"title": "Select input folder"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cancelled"] is False
+    assert body["path"] == str(folder.resolve())
+
+
+def test_folder_dialog_cancel(client, monkeypatch):
+    monkeypatch.setattr(api_app, "pick_folder_dialog", lambda title="Select folder": None)
+    r = client.post("/dialog/folder", json={})
+    assert r.status_code == 200
+    assert r.json()["cancelled"] is True
+    assert r.json()["path"] is None
+
+
+def test_set_focal_auto_center_flag(client, tmp_path):
+    src = _imgs(tmp_path)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 320,
+        "target_height": 180,
+    })
+    r = client.post("/focal", json={"x": 160, "y": 120, "index": 0, "auto_center": True})
+    assert r.status_code == 200
+    im = r.json()["images"][0]
+    assert im["auto_center"] is True
+    assert im["focal_at_center"] is True
+    assert im["width"] == 320
+    assert im["megapixels"] > 0
+
+
+def test_preview_without_focal_does_not_set_focal(client, tmp_path):
+    src = _imgs(tmp_path)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 320,
+        "target_height": 180,
+    })
+    assert client.get("/session").json()["images"][0]["focal"] is None
+    r = client.get("/media/preview/0")
+    assert r.status_code == 200
+    snap = client.get("/session").json()["images"][0]
+    assert snap["focal"] is None
+    assert snap["completed"] is False
+    assert snap["auto_center"] is False
+
+
 def test_export_writes_numbered_jpegs(client, tmp_path):
     src = _imgs(tmp_path, 2)
     client.post("/session", json={

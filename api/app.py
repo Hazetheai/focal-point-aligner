@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -101,6 +104,69 @@ class BatchRootBody(BaseModel):
     root: str
 
 
+class FolderDialogBody(BaseModel):
+    title: Optional[str] = "Select folder"
+
+
+def pick_folder_dialog(title: str = "Select folder") -> Optional[str]:
+    """Open a native folder-only picker. Returns an absolute path, or None if cancelled."""
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            script = (
+                f'POSIX path of (choose folder with prompt "{title.replace(chr(34), "")}")'
+            )
+            proc = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return None
+            path = proc.stdout.strip().rstrip("/")
+            return path or None
+        if system == "Windows":
+            ps = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                f"$d.Description = '{title.replace(chr(39), '')}'; "
+                "$d.ShowNewFolderButton = $true; "
+                "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }"
+            )
+            proc = subprocess.run(
+                ["powershell", "-STA", "-NoProfile", "-Command", ps],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            path = (proc.stdout or "").strip()
+            return path or None
+        zenity = shutil.which("zenity")
+        kdialog = shutil.which("kdialog")
+        if zenity:
+            proc = subprocess.run(
+                [zenity, "--file-selection", "--directory", f"--title={title}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            path = (proc.stdout or "").strip()
+            return path or None
+        if kdialog:
+            proc = subprocess.run(
+                [kdialog, "--getexistingdirectory", ".", title],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            path = (proc.stdout or "").strip()
+            return path or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "has_session": _session is not None}
@@ -114,6 +180,19 @@ def get_prefs():
 @app.post("/prefs")
 def post_prefs(body: dict):
     return save_prefs(body)
+
+
+@app.post("/dialog/folder")
+def dialog_folder(body: Optional[FolderDialogBody] = None):
+    """Native OS folder picker. Folder-only — never files."""
+    title = (body.title if body else None) or "Select folder"
+    path = pick_folder_dialog(title)
+    if not path:
+        return {"path": None, "cancelled": True}
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_dir():
+        raise HTTPException(400, f"Not a directory: {resolved}")
+    return {"path": str(resolved), "cancelled": False}
 
 
 @app.post("/session")

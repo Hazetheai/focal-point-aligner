@@ -19,3 +19,22 @@ export function computeCrop(focalX, focalY, origW, origH, targetW, targetH) {
     h: Math.round(h),
   }
 }
+
+/** Port of aligner_core.crop_to_widget. */
+export function cropToWidget(cropX, cropY, cropW, cropH, dispW, dispH, origW, origH) {
+  const sx = origW ? dispW / origW : 1
+  const sy = origH ? dispH / origH : 1
+  return {
+    x: cropX * sx,
+    y: cropY * sy,
+    w: cropW * sx,
+    h: cropH * sy,
+  }
+}
+
+export function targetForMode(session) {
+  const landscape = session?.alignment_mode !== 'portrait'
+  return landscape
+    ? { w: session.target_width, h: session.target_height }
+    : { w: session.target_height, h: session.target_width }
+}
