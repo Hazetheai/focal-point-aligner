@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Installed into .git/hooks/post-merge by scripts/install-git-hooks.sh
+# After a merge onto the local `release` branch, build into ./releases/.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT" ]; then
+  exit 0
+fi
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [ "$branch" != "release" ]; then
+  exit 0
+fi
+
+# Avoid rebuilding when the merge brought only non-product changes if skipped explicitly.
+if [ "${FPA_SKIP_RELEASE:-}" = "1" ]; then
+  echo "FPA_SKIP_RELEASE=1 — skipping local release build."
+  exit 0
+fi
+
+echo ""
+echo "Merged into local 'release' branch — building unsigned .app into ./releases/"
+echo "(Set FPA_SKIP_RELEASE=1 to skip. Artifacts stay on disk; nothing is pushed.)"
+echo ""
+exec "$ROOT/scripts/release.sh"

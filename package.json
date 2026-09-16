@@ -6,6 +6,7 @@
     "dev": "bash scripts/dev.sh",
     "desktop": "tauri dev",
     "build": "tauri build",
+    "release": "bash scripts/release.sh",
     "web": "bash scripts/dev.sh"
   },
   "devDependencies": {

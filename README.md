@@ -82,8 +82,9 @@ Hotkeys are tab-scoped.
 | Path | Role |
 |------|------|
 | `scripts/dev.sh` | Dev launcher (`npm run dev`) |
-| `scripts/open-app.sh` | Open release `.app` with `FPA_ROOT` |
-| `build_macos.sh` | Unsigned Tauri release build |
+| `scripts/open-app.sh` | Open latest local release `.app` with `FPA_ROOT` |
+| `scripts/release.sh` | Local unsigned release into `releases/` |
+| `build_macos.sh` | Unsigned Tauri build |
 | `api/app.py` | FastAPI |
 | `web/` | React UI |
 | `aligner_core.py` | Crop / state / export |
@@ -92,6 +93,18 @@ Hotkeys are tab-scoped.
 | `batch.py` | Batch / merge / move |
 | `cli.py` | CLI |
 | `src-tauri/` | Tauri 2 shell |
+
+## Local desktop releases
+
+Unsigned `.app` builds stay on this machine (no GitHub/Apple publish):
+
+```bash
+./scripts/install-git-hooks.sh   # once
+git checkout release && git merge main   # builds into releases/
+./scripts/open-app.sh
+```
+
+Details: [`docs/LOCAL_RELEASES.md`](docs/LOCAL_RELEASES.md).
 
 Agent notes: [`AGENTS.md`](AGENTS.md).
 

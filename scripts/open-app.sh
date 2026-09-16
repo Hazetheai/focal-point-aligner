@@ -2,11 +2,18 @@
 # Open the release Tauri .app with FPA_ROOT pointed at this checkout.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/src-tauri/target/release/bundle/macos/Focal Point Aligner.app"
+
+# Prefer a staged local release; fall back to the last Tauri build output.
+if [ -d "$ROOT/releases/latest/Focal Point Aligner.app" ]; then
+  APP="$ROOT/releases/latest/Focal Point Aligner.app"
+else
+  APP="$ROOT/src-tauri/target/release/bundle/macos/Focal Point Aligner.app"
+fi
 
 if [ ! -d "$APP" ]; then
-  echo "App not found: $APP" >&2
-  echo "Build first: ./build_macos.sh" >&2
+  echo "App not found." >&2
+  echo "Build a local release: ./scripts/release.sh" >&2
+  echo "Or build only: ./build_macos.sh" >&2
   exit 1
 fi
 

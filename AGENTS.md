@@ -186,8 +186,13 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Compare / 
 
 - Dev GUI: `npm run dev`
 - Tauri window: `npm run desktop`
-- Tauri release (unsigned): `./build_macos.sh` or `npm run build`
-- Open release app: `./scripts/open-app.sh`
+- Tauri build (unsigned): `./build_macos.sh` or `npm run build`
+- Local release pipeline (artifacts in gitignored `releases/`, no remote publish):
+  - Once: `./scripts/install-git-hooks.sh` and keep a local `release` branch
+  - Ship: `git checkout release && git merge main` (post-merge runs `scripts/release.sh`)
+  - Or: `npm run release` / `./scripts/release.sh [--bump patch]`
+  - Open: `./scripts/open-app.sh` (prefers `releases/latest`)
+  - Docs: `docs/LOCAL_RELEASES.md`
 
 ## Conventions
 
