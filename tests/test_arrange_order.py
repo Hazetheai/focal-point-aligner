@@ -119,37 +119,3 @@ def test_apply_arrange_order_keeps_current_image():
         assert core.apply_arrange_order([1, 2, 0, 3, 4]) is True
         assert core.image_files[core.current_idx].name == name
         assert core.current_idx == 2
-
-
-@pytest.fixture
-def qapp():
-    import os
-
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
-    return app
-
-
-def test_arrange_grid_syncs_after_discard(qapp, tmp_path):
-    """After a discard + sync_from_core, the grid shows only current images, no IndexError."""
-    from ui.arrange_grid import ArrangeGridWidget
-
-    core = _make_core(tmp_path, count=5)
-    _set_all_focal(core)
-
-    grid = ArrangeGridWidget(core)
-    assert grid.get_display_order() == [0, 1, 2, 3, 4]
-    assert len(grid._thumbnails) == 5
-
-    core.current_idx = 1
-    core.discard_current()
-    assert len(core.image_files) == 4
-
-    grid.sync_from_core()
-
-    assert grid.get_display_order() == [0, 1, 2, 3]
-    assert len(grid._thumbnails) == 4
-    for thumb in grid._thumbnails:
-        assert thumb._orig_idx < len(core.image_files)

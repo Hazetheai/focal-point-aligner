@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Core logic for Focal Point Aligner - extracted from align_focal_points.py
-Contains all image processing, focal point management, and navigation logic.
-No UI code - designed to be used by PyQt6 UI.
+Core logic for Focal Point Aligner — image processing, focal points, crop, export.
+UI-free; used by the FastAPI backend and CLI.
 """
 
 import json
+import logging
 import math
 import shutil
 import threading
@@ -16,11 +16,7 @@ from typing import Optional
 
 import cv2
 
-try:
-    from ui.logger import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 try:
     from PIL import Image, ImageOps

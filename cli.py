@@ -7,7 +7,6 @@ Provides command-line interface for managing focal points and exporting aligned 
 import argparse
 import json
 import sys
-import subprocess
 from pathlib import Path
 
 from aligner_core import FocalPointAlignerCore
@@ -83,10 +82,6 @@ def cmd_init(args):
         "target_height": core.target_height,
         "max_zoom": core.max_zoom,
     }, args.json)
-    
-    if args.gui:
-        main_script = Path(__file__).parent / "main.py"
-        subprocess.call([sys.executable, str(main_script), '--config', 'config.json'])
     
     return 0
 
@@ -654,7 +649,6 @@ def main():
     p.add_argument("--width", type=int, default=2560, help="Target width")
     p.add_argument("--height", type=int, default=1440, help="Target height")
     p.add_argument("--max-zoom", dest="max_zoom", type=float, default=3.0, help="Max zoom (cover multiplier)")
-    p.add_argument("--gui", action="store_true", help="Launch GUI after initialization")
 
     p = subparsers.add_parser("status", help="Show current status")
     p.add_argument("--quiet", action="store_true", help="Quiet mode")

@@ -6,7 +6,7 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 
 **Focal Point Aligner** — click a focal point on each photo in a folder; export aligned JPEGs at a shared target size with that point centered.
 
-Current GUI: **React (Vite) + FastAPI**, optional Tauri shell. PyQt6 in `main.py` / `ui/` is **legacy**.
+Current GUI: **React (Vite) + FastAPI**, with an optional **Tauri** macOS `.app` shell. There is no PyQt GUI.
 
 Workflow:
 
@@ -24,9 +24,17 @@ Workflow:
 npm run dev
 ```
 
-(`./dev.sh` is the same.) Creates `./venv` if needed, installs Python + `web/` deps, starts FastAPI on **8765**, Vite on **5173**, opens the browser. Requires Node.js and Python 3. Do not tell people to run `main.py` unless they explicitly want the old PyQt app.
+(`./dev.sh` is the same.) Creates `./venv` if needed, installs Python + `web/` deps, starts FastAPI on **8765**, Vite on **5173**, opens the browser. Requires Node.js and Python 3.
 
 Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/folder`, or Tauri when running as a desktop shell). Import can also pick a `.txt` via `POST /dialog/file`. In batch mode, Browse + Refresh load the subfolder queue; Merge / Move aligned / Start Batch use that queue.
+
+## Desktop (unsigned Tauri)
+
+- `./build_macos.sh` / `npm run build` → `src-tauri/target/release/bundle/macos/Focal Point Aligner.app`
+- `./scripts/open-app.sh` sets `FPA_ROOT` to the repo and opens the `.app`
+- First open: Finder → right-click → **Open** (Gatekeeper; unsigned)
+- The `.app` embeds the web UI and spawns `./venv/bin/python -m api.app` (needs this checkout + venv, or `FPA_ROOT` / `FPA_PYTHON`)
+- Dev shell: `npm run desktop`
 
 ## Size presets & live retarget
 
@@ -66,18 +74,18 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Stack & tests
 
-- Python 3.x, FastAPI, uvicorn, opencv-python, numpy, pillow. See `requirements.txt`.
-- Web: Vite + React in `web/`. Root `package.json` only launches the stack / Tauri.
-- Venv lives at `./venv` (gitignored). No system Python on the original machine had deps.
+- Python 3.x, FastAPI, uvicorn, opencv-python, numpy, pillow, httpx, onnxruntime. See `requirements.txt` (no PyQt).
+- Web: Vite + React in `web/`. Root `package.json` launches the stack / Tauri.
+- Venv lives at `./venv` (gitignored).
 - Tests: `./venv/bin/python -m pytest tests/ -v`
-- Qt tests (arrange grid, return-to-opener) need `QT_QPA_PLATFORM=offscreen`.
-- **Do not read `pyqt_aligner.log` wholesale** — it can be tens of MB. Gitignored; safe to delete.
 
 ## Architecture / where things live
 
 | Path | Role |
 |------|------|
 | `scripts/dev.sh` | GUI launcher used by `npm run dev` |
+| `scripts/open-app.sh` | Open release `.app` with `FPA_ROOT` |
+| `build_macos.sh` | Unsigned Tauri release build |
 | `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, import, arrange, dialogs |
 | `web/src/Opener.jsx` | Single / Batch / Import, size presets, merge/move |
 | `web/src/Aligner.jsx` | Original / Preview / Arrange, AutoArrange, slots, nav dots, hotkeys |
@@ -85,12 +93,10 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 | `web/src/presets.js` | Target size ratio + resolution presets |
 | `import_download.py` | URL-list download (paste / .txt / folder-of-.txt) |
 | `arrange_auto.py` | Color / depth / lead-match / faces sort helpers |
-| `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export. No Qt. |
+| `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export |
 | `batch.py` | **UI-free batch** — discovery, done-detection, `merge_folders()`, `move_aligned_outputs()` |
-| `cli.py` | Thin CLI over the core |
-| `src-tauri/` | Optional Tauri 2 shell |
-| `main.py`, `ui/` | **Legacy PyQt GUI**. Edit only if asked. |
-| `align_focal_points.py`, `ui/closer_screen.py`, `ui/main_window.py` | Older unused reference. |
+| `cli.py` / `focalpoint` | CLI over the core |
+| `src-tauri/` | Tauri 2 shell (spawns FastAPI from project venv) |
 
 ## Core state (`FocalPointAlignerCore`)
 
@@ -105,7 +111,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 ### Persistence (`focal_points.json`)
 
 - Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `timestamp`).
-- Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`.
+- Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`, `arrangements`, `arrangement_active`, `arrangement_reversed`.
 - `load_focal_points()` re-applies `order` via `_reorder_files_by_names()`.
 - Thumbs/previews: `<input>/.fpa_cache/` keyed by **filename**, not index (reorder must not reuse the wrong JPEG). Media URLs should cache-bust with `?n=<filename>`.
 - `config.json` at repo root: opener prefs. Gitignored.
@@ -173,7 +179,6 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Compare / 
 - `tests/test_core_io.py` — header probe, EXIF size, filename-keyed cache, confirm does not write full-res.
 - `tests/test_batch.py` — discovery, merge, move-aligned.
 - `tests/test_arrange_order.py` — discard → reorder → persist; **current_idx follows the file**.
-- `tests/test_return_to_opener.py` — PyQt return-to-opener + batch auto-advance.
 - `tests/test_presets_import_arrange.py` — size retarget, import SSE, AutoArrange SSE, reverse lit state.
 - Run: `./venv/bin/python -m pytest tests/ -v`
 
@@ -181,12 +186,13 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Compare / 
 
 - Dev GUI: `npm run dev`
 - Tauri window: `npm run desktop`
-- Tauri release: `npm run build`
-- Legacy PyInstaller: `./build_macos.sh` → `dist/FocalPointAligner.app`
+- Tauri release (unsigned): `./build_macos.sh` or `npm run build`
+- Open release app: `./scripts/open-app.sh`
 
 ## Conventions
 
-- Crop/reorder/export logic stays in `aligner_core.py` (no Qt, no React).
+- Crop/reorder/export logic stays in `aligner_core.py` (no React).
 - Prefer remapping index dicts from filenames after discard/reorder over ad-hoc UI rebuilds.
 - Keep Original / Preview / Arrange on the same `current_idx`.
 - Preview/media generation must not invent saved focals for unset images.
+- Do not reintroduce a PyQt GUI or PyInstaller packaging.

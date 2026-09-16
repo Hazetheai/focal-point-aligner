@@ -2,20 +2,16 @@
 Batch pipeline logic for the Focal Point Aligner - UI-free.
 
 Provides discovery / done-detection / ordering for batch (root-folder) mode,
-plus the merge and move-aligned operations. No Qt imports.
+plus the merge and move-aligned operations.
 """
 
+import logging
 import shutil
 from pathlib import Path
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
 
-try:
-    from ui.logger import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
-
+logger = logging.getLogger(__name__)
 
 def _contains_images(path: Path) -> bool:
     if not path.is_dir():
