@@ -84,8 +84,9 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 | Path | Role |
 |------|------|
 | `scripts/dev.sh` | GUI launcher used by `npm run dev` |
-| `scripts/open-app.sh` | Open release `.app` with `FPA_ROOT` |
-| `build_macos.sh` | Unsigned Tauri release build |
+| `scripts/open-app.sh` | Open latest local release `.app` with `FPA_ROOT` |
+| `scripts/release.sh` | Local unsigned release into `releases/` |
+| `build_macos.sh` | Unsigned Tauri build |
 | `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, import, arrange, dialogs |
 | `web/src/Opener.jsx` | Single / Batch / Import, size presets, merge/move |
 | `web/src/Aligner.jsx` | Original / Preview / Arrange, AutoArrange, slots, nav dots, hotkeys |
