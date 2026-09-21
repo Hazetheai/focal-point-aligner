@@ -125,6 +125,29 @@ export function nudgeCropScale(cropScale, deltaY, factor = 1.08) {
   return clampCropScale(next)
 }
 
+/** Port of aligner_core.transform_focal_for_flips — map unflipped focal into flipped space. */
+export function transformFocalForFlips(fx, fy, width, height, flipH = false, flipV = false) {
+  let x = Number(fx)
+  let y = Number(fy)
+  if (flipH) x = (Number(width) - 1) - x
+  if (flipV) y = (Number(height) - 1) - y
+  return { x, y }
+}
+
+/**
+ * Map a crop rect computed in flipped space back onto the unflipped source bitmap
+ * (Preview draws from the original JPEG without applying canvas transforms).
+ */
+export function sourceCropForFlips(crop, width, height, flipH = false, flipV = false) {
+  if (!crop) return { x: 0, y: 0, w: 1, h: 1 }
+  return {
+    x: flipH ? Number(width) - crop.x - crop.w : crop.x,
+    y: flipV ? Number(height) - crop.y - crop.h : crop.y,
+    w: crop.w,
+    h: crop.h,
+  }
+}
+
 /** Draw a rule-of-thirds grid into a canvas context. */
 export function drawRuleOfThirds(ctx, width, height, { color = 'rgba(255,255,255,0.85)', lineWidth = 2 } = {}) {
   if (!width || !height) return

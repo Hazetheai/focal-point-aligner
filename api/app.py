@@ -72,6 +72,8 @@ class FocalBody(BaseModel):
     auto_center: bool = False
     index: Optional[int] = None
     crop_scale: Optional[float] = None
+    flip_h: Optional[bool] = None
+    flip_v: Optional[bool] = None
 
 
 class NavigateBody(BaseModel):
@@ -519,6 +521,8 @@ def set_focal(body: FocalBody):
         body.y,
         auto_center=body.auto_center,
         crop_scale=body.crop_scale,
+        flip_h=body.flip_h,
+        flip_v=body.flip_v,
     )
     core.save_focal_points()
     return core.session_snapshot()

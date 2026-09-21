@@ -12,8 +12,8 @@ Workflow:
 
 1. Opener: Single / Batch / **Import** → target size (ratio + resolution presets, or manual W×H) → Start. Import pastes URLs or picks `.txt` / folder-of-lists, downloads into a batch root, then continues as Batch (align → Merge / Move aligned).
 2. **Original**: click/drag focal; wheel resizes crop box; Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Header can change target size mid-session (live crop/preview retarget).
-3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel to change `crop_scale`; `<` / `>` neighbor fade; Compare (C) + Commit (**Enter** when draft is dirty and not comparing). Live zoom indicator in the toolbar.
-4. **Arrange**: drag thumbnails; AutoArrange (Color / Depth near→far / Lead match / Faces); Reverse toggles order in the active slot (button stays lit while reversed); arrangement slots Original + 1–9 (hotkeys `0`–`9`); Compare two slots with **C**. Manual DnD commits to a slot when leaving Arrange.
+3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel / Zoom ± to change `crop_scale`; **Flip H / Flip V** toggles (draft dirty includes flips; pan deltas negate under flips); neighbor **Prev / Next** (±0.1 opacity, clamped when no neighbor); Compare (C) + Commit (**Enter** when draft is dirty and not comparing). Toolbar is one row: left Compare/Commit/Wrap/flips · center neighbors · right Zoom −/label/+.
+4. **Arrange**: one toolbar row — Original/Aligned + slot Compare/Show (C) on the left; an **Arrange** dropdown (AutoArrange Color/Depth/Lead/Faces, Reverse, slots Orig+1–9, info) mid-right with progress floating above the trigger; Zoom −/%/+ on the far right. Drag thumbnails to reorder; Reverse toggles order in the active slot (button stays lit while reversed); hotkeys `0`–`9` recall slots; Manual DnD commits to a slot when leaving Arrange.
 5. **E** / Export writes `{idx:04d}.jpg` to the output folder (live SSE progress; focals JSON is kept).
 6. **Esc** (or Done) returns to the opener; in batch mode it opens the next pending folder.
 7. Original **D** duplicates the current image on disk (`name__dup.ext`) and inserts it after the current index with the same focal/crop settings.
@@ -53,7 +53,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - Depth AutoArrange is near→far only; use Reverse for far→near. Lead match uses the **selected** thumbnail (hover Lead to pulse its border).
 - Arrange: Cmd/Ctrl-click and Shift-click select multiple thumbnails; dragging moves the whole selection as a block.
 - `focal_points.json` stores `arrangements` (`original`, `1`…`9`) and `arrangement_active`. Hotkeys `0`–`9` recall; leaving Arrange commits a manual draft to the next free slot.
-- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`. AutoArrange status floats above the button row (no toolbar reflow).
+- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`. AutoArrange status floats above the Arrange dropdown trigger (no toolbar reflow).
 - `load_image_safely` always returns 8-bit BGR (scales 10/12/16-bit sources) so Arrange aligned previews / export are not near-white. Preview cache filenames use a `_u8` suffix.
 
 ## Focal clicks (Original tab)
@@ -107,11 +107,11 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - `discarded: set[str]` — filenames.
 - `current_idx: int` — shared across Original / Preview / Arrange. Tab switches must not change it.
 - `json_path` = `<input_folder>/focal_points.json` (migrates from `<output_folder>/focal_points.json` once if needed). Export cleanup does **not** delete it.
-- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`.
+- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`, `flip_h`, `flip_v`.
 
 ### Persistence (`focal_points.json`)
 
-- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `timestamp`).
+- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `flip_h`, `flip_v`, `timestamp`).
 - Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`, `arrangements`, `arrangement_active`, `arrangement_reversed`.
 - `load_focal_points()` re-applies `order` via `_reorder_files_by_names()`.
 - Thumbs/previews: `<input>/.fpa_cache/` keyed by **filename**, not index (reorder must not reuse the wrong JPEG). Media URLs should cache-bust with `?n=<filename>`.
@@ -127,16 +127,16 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Keyboard
 
-`Enter` save+next (Original) / commit draft (Preview when dirty) · `Space` skip · `←→` navigate (no wrap) · `X` / **Shift+MMB** discard · `D` duplicate (Original) · `Del` clear · `P` preview · `O` orientation · `A` arrange · `H` home focal+scale · `G` grid · `I` mask · `R` reset · `E` export · `Esc` opener / next batch · Preview `<` previous / `>` next overlay · Arrange `0`–`9` slots · `C` compare slots.
+`Enter` save+next (Original) / commit draft (Preview when dirty) · `Space` skip · `←→` navigate (no wrap) · `X` / **Shift+MMB** discard · `D` duplicate (Original) · `Del` clear · `P` preview · `O` orientation · `A` arrange · `H` home focal+scale · `G` grid · `I` mask · `R` reset · `E` export · `Esc` opener / next batch · Preview `<` / `,` previous neighbor · `>` / `.` next neighbor (clamped) · Arrange `0`–`9` slots · `C` compare slots.
 
-Hotkey chips are **tab-scoped**: Original shows save/duplicate/grid/mask/home; Preview shows Enter·Commit (when draft dirty and not comparing) and Compare (C); Arrange shows compare (and slot digits still work). Keys that are not shown for the current tab do nothing.
+Hotkey chips are **tab-scoped**: Original shows save/duplicate/grid/mask/home; Preview shows Enter·Commit (when draft dirty and not comparing), Compare (C), and `<`/`>` neighbor; Arrange shows compare (and slot digits still work). Keys that are not shown for the current tab do nothing.
 Preview can toggle **Wrap** so ←→ loop the list; with Wrap off, navigation stops at the ends.
 
 Mouse on Original: left click/drag pending · wheel crop size · left double save+next · right click center pending · right double center save+next · Shift+middle discard · **H** home.
 
 Reorder only on the Arrange tab (drag thumbs); `[`/`]` are not global reorder shortcuts.
 
-Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Compare / Commit (Enter) for fine-tune. Pan/zoom bakes edge-forced magnification into `crop_scale` so returning to center keeps that zoom; `MIN_CROP_SCALE` is `0.05` (~20× vs base).
+Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip H/V · Compare / Commit (Enter) for fine-tune. Flips store `flip_h`/`flip_v` with the focal (preview draw transforms focal into flipped space and samples the unflipped bitmap). Pan/zoom bakes edge-forced magnification into `crop_scale` so returning to center keeps that zoom; `MIN_CROP_SCALE` is `0.05` (~20× vs base).
 
 ## Image-size framing (crop math)
 

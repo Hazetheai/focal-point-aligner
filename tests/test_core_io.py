@@ -103,7 +103,7 @@ def test_thumb_and_preview_keyed_by_filename(tmp_path):
     assert core.ensure_preview_for_current("landscape") is True
     preview = core.preview_path(core.image_files[0], "landscape")
     assert preview.exists()
-    assert preview.name == "image0000_landscape_u8.jpg"
+    assert preview.name == "image0000_landscape_u8_f00.jpg"
 
 
 def test_load_image_safely_scales_10bit_uint16(tmp_path):

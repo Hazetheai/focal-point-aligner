@@ -260,6 +260,33 @@ def _transpose_hw(img):
     return np.ascontiguousarray(np.transpose(img, (1, 0)))
 
 
+
+def apply_user_flips(img, flip_h=False, flip_v=False):
+    """Apply user horizontal/vertical flips to a BGR image (after EXIF)."""
+    if img is None:
+        return None
+    flip_h = bool(flip_h)
+    flip_v = bool(flip_v)
+    if flip_h and flip_v:
+        return cv2.flip(img, -1)
+    if flip_h:
+        return cv2.flip(img, 1)
+    if flip_v:
+        return cv2.flip(img, 0)
+    return img
+
+
+def transform_focal_for_flips(fx, fy, width, height, flip_h=False, flip_v=False):
+    """Map a focal from unflipped EXIF space into flipped image space."""
+    fx = float(fx)
+    fy = float(fy)
+    if flip_h:
+        fx = (float(width) - 1.0) - fx
+    if flip_v:
+        fy = (float(height) - 1.0) - fy
+    return fx, fy
+
+
 def _apply_exif_orientation(img, orientation):
     """Rotate/flip a BGR array so it matches browser (and PIL) display orientation."""
     orientation = int(orientation or 1)
@@ -522,6 +549,8 @@ class FocalPointAlignerCore:
         self.completed = set()
         self.auto_center_flags = {}
         self.crop_scales = {}
+        self.flip_h = {}
+        self.flip_v = {}
         
         self.preview_dirty = set()
         self._cancel_preview_generation = False
@@ -615,6 +644,10 @@ class FocalPointAlignerCore:
                                 self.auto_center_flags[idx] = coords.get("auto_center", False)
                                 if "crop_scale" in coords:
                                     self.crop_scales[idx] = clamp_crop_scale(coords.get("crop_scale"))
+                                if coords.get("flip_h"):
+                                    self.flip_h[idx] = True
+                                if coords.get("flip_v"):
+                                    self.flip_v[idx] = True
                             elif isinstance(coords, list) and len(coords) >= 4:
                                 self.focal_points[idx] = (coords[0], coords[1])
                                 self.image_dimensions[idx] = (coords[2], coords[3])
@@ -673,6 +706,8 @@ class FocalPointAlignerCore:
         new_auto_center = {}
         new_dimensions = {}
         new_crop_scales = {}
+        new_flip_h = {}
+        new_flip_v = {}
         for new_idx, img_file in enumerate(ordered):
             old_idx = old_name_to_idx[img_file.name]
             if old_idx in self.focal_points:
@@ -685,6 +720,10 @@ class FocalPointAlignerCore:
                 new_dimensions[new_idx] = self.image_dimensions[old_idx]
             if old_idx in self.crop_scales:
                 new_crop_scales[new_idx] = self.crop_scales[old_idx]
+            if self.flip_h.get(old_idx):
+                new_flip_h[new_idx] = True
+            if self.flip_v.get(old_idx):
+                new_flip_v[new_idx] = True
         
         self.image_files = ordered
         self.focal_points = new_focal
@@ -692,6 +731,8 @@ class FocalPointAlignerCore:
         self.auto_center_flags = new_auto_center
         self.image_dimensions = new_dimensions
         self.crop_scales = new_crop_scales
+        self.flip_h = new_flip_h
+        self.flip_v = new_flip_v
         logger.info(f"[ALIGNER _reorder_files_by_names] Reordered to {[f.name[:20] for f in ordered[:5]]}...")
     
     def _validate_and_discard_images(self):
@@ -754,6 +795,8 @@ class FocalPointAlignerCore:
                 del self.auto_center_flags[idx]
             if idx in self.crop_scales:
                 del self.crop_scales[idx]
+            self.flip_h.pop(idx, None)
+            self.flip_v.pop(idx, None)
         
         data = {"_meta": {
             "version": JSON_VERSION,
@@ -777,6 +820,8 @@ class FocalPointAlignerCore:
                     "original_height": dims[1],
                     "auto_center": auto_center,
                     "crop_scale": clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE)),
+                    "flip_h": bool(self.flip_h.get(idx, False)),
+                    "flip_v": bool(self.flip_v.get(idx, False)),
                     "timestamp": datetime.now().isoformat()
                 }
                 data[filename] = entry
@@ -1005,6 +1050,8 @@ class FocalPointAlignerCore:
         self.focal_points = _insert_dict(self.focal_points)
         self.auto_center_flags = _insert_dict(self.auto_center_flags)
         self.crop_scales = _insert_dict(self.crop_scales)
+        self.flip_h = _insert_dict(self.flip_h)
+        self.flip_v = _insert_dict(self.flip_v)
         self.image_dimensions = _insert_dict(self.image_dimensions)
         self.completed = _insert_set(self.completed)
         self.preview_dirty = _insert_set(self.preview_dirty)
@@ -1054,7 +1101,15 @@ class FocalPointAlignerCore:
 
     def preview_path(self, img_file, orientation="landscape"):
         # `_u8` suffix invalidates previews written before uint8 normalization.
-        return self.preview_cache_folder / f"{Path(img_file).stem}_{orientation}_u8.jpg"
+        # Flip flags are part of the cache key so toggles regenerate aligned JPEGs.
+        fh = fv = 0
+        name = Path(img_file).name
+        for i, f in enumerate(self.image_files):
+            if f.name == name:
+                fh = 1 if self.flip_h.get(i) else 0
+                fv = 1 if self.flip_v.get(i) else 0
+                break
+        return self.preview_cache_folder / f"{Path(img_file).stem}_{orientation}_u8_f{fh}{fv}.jpg"
 
     def ensure_thumbnail(self, idx):
         """Write a ~512px JPEG thumb for idx if missing. Returns path or None."""
@@ -1124,6 +1179,8 @@ class FocalPointAlignerCore:
                 "auto_center": bool(self.auto_center_flags.get(i, False)),
                 "focal_at_center": self.is_focal_at_center_idx(i),
                 "crop_scale": clamp_crop_scale(self.crop_scales.get(i, DEFAULT_CROP_SCALE)) if focal else DEFAULT_CROP_SCALE,
+                "flip_h": bool(self.flip_h.get(i, False)),
+                "flip_v": bool(self.flip_v.get(i, False)),
             })
         return {
             "images": images,
@@ -1243,7 +1300,7 @@ class FocalPointAlignerCore:
             return cv2.imread(str(preview_path))
         return None
     
-    def set_focal_point(self, x, y, auto_center=False, crop_scale=None):
+    def set_focal_point(self, x, y, auto_center=False, crop_scale=None, flip_h=None, flip_v=None):
         """Set focal point for current image (in original image coordinates)."""
         self._ensure_dims(self.current_idx)
         
@@ -1253,6 +1310,16 @@ class FocalPointAlignerCore:
             self.crop_scales[self.current_idx] = clamp_crop_scale(crop_scale)
         elif self.current_idx not in self.crop_scales:
             self.crop_scales[self.current_idx] = DEFAULT_CROP_SCALE
+        if flip_h is not None:
+            if flip_h:
+                self.flip_h[self.current_idx] = True
+            else:
+                self.flip_h.pop(self.current_idx, None)
+        if flip_v is not None:
+            if flip_v:
+                self.flip_v[self.current_idx] = True
+            else:
+                self.flip_v.pop(self.current_idx, None)
         self.completed.add(self.current_idx)
         
         with self._preview_generation_lock:
@@ -1504,14 +1571,20 @@ class FocalPointAlignerCore:
                 placeholder = np.full((target_h, target_w, 3), 128, dtype=np.uint8)
                 cv2.imwrite(str(output_path), placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
                 return True
+
+            fh = bool(self.flip_h.get(idx, False))
+            fv = bool(self.flip_v.get(idx, False))
+            h0, w0 = img.shape[:2]
+            if focal is None:
+                focal = (w0 / 2, h0 / 2)
+            fx, fy = transform_focal_for_flips(focal[0], focal[1], w0, h0, fh, fv)
+            img = apply_user_flips(img, fh, fv)
             
             h, w = img.shape[:2]
-            self.image_dimensions[idx] = (w, h)
-            if focal is None:
-                focal = (w / 2, h / 2)
+            self.image_dimensions[idx] = (w0, h0)
             
             aligned, _ = render_aligned(
-                img, focal, target_w, target_h,
+                img, (fx, fy), target_w, target_h,
                 max_zoom=self.max_zoom,
                 crop_scale=self.crop_scales.get(idx, DEFAULT_CROP_SCALE),
             )
@@ -1703,12 +1776,23 @@ class FocalPointAlignerCore:
         for old_idx, scale in self.crop_scales.items():
             new_idx = old_to_new.get(old_idx, old_idx)
             new_crop_scales[new_idx] = scale
+
+        new_flip_h = {}
+        new_flip_v = {}
+        for old_idx, flag in self.flip_h.items():
+            if flag:
+                new_flip_h[old_to_new.get(old_idx, old_idx)] = True
+        for old_idx, flag in self.flip_v.items():
+            if flag:
+                new_flip_v[old_to_new.get(old_idx, old_idx)] = True
         
         self.focal_points = new_focal
         self.completed = new_completed
         self.auto_center_flags = new_auto_center
         self.image_dimensions = new_dimensions
         self.crop_scales = new_crop_scales
+        self.flip_h = new_flip_h
+        self.flip_v = new_flip_v
         
         old_current = self.current_idx
         self.current_idx = old_to_new.get(old_current, old_current)
@@ -1749,6 +1833,21 @@ class FocalPointAlignerCore:
             else:
                 new_scales[idx] = scale
         self.crop_scales = new_scales
+
+        def _swap_flag_map(d):
+            out = {}
+            for idx, flag in d.items():
+                if not flag:
+                    continue
+                if idx == i:
+                    out[j] = True
+                elif idx == j:
+                    out[i] = True
+                else:
+                    out[idx] = True
+            return out
+        self.flip_h = _swap_flag_map(self.flip_h)
+        self.flip_v = _swap_flag_map(self.flip_v)
         
         new_completed = set()
         for idx in self.completed:
@@ -1807,6 +1906,8 @@ class FocalPointAlignerCore:
         self.auto_center_flags = _shift_dict(self.auto_center_flags)
         self.image_dimensions = _shift_dict(self.image_dimensions)
         self.crop_scales = _shift_dict(self.crop_scales)
+        self.flip_h = _shift_dict(self.flip_h)
+        self.flip_v = _shift_dict(self.flip_v)
         self.completed = _shift_set(self.completed)
         self.preview_dirty = _shift_set(self.preview_dirty)
         
@@ -1832,6 +1933,8 @@ class FocalPointAlignerCore:
         new_auto_center = {}
         new_dimensions = {}
         new_crop_scales = {}
+        new_flip_h = {}
+        new_flip_v = {}
         
         for new_pos, orig_idx in enumerate(display_order):
             if orig_idx in self.focal_points:
@@ -1844,6 +1947,10 @@ class FocalPointAlignerCore:
                 new_dimensions[new_pos] = self.image_dimensions[orig_idx]
             if orig_idx in self.crop_scales:
                 new_crop_scales[new_pos] = self.crop_scales[orig_idx]
+            if self.flip_h.get(orig_idx):
+                new_flip_h[new_pos] = True
+            if self.flip_v.get(orig_idx):
+                new_flip_v[new_pos] = True
         
         old_order = [i for i in range(len(self.image_files))]
         if display_order != old_order:
@@ -1854,6 +1961,8 @@ class FocalPointAlignerCore:
             self.auto_center_flags = new_auto_center
             self.image_dimensions = new_dimensions
             self.crop_scales = new_crop_scales
+            self.flip_h = new_flip_h
+            self.flip_v = new_flip_v
             self.current_idx = old_to_new.get(self.current_idx, 0)
             self.preview_dirty = {
                 old_to_new[idx] for idx in self.preview_dirty if idx in old_to_new
@@ -1948,6 +2057,8 @@ class FocalPointAlignerCore:
         self.completed.clear()
         self.auto_center_flags.clear()
         self.crop_scales.clear()
+        self.flip_h.clear()
+        self.flip_v.clear()
         
         if self.json_path.exists():
             self.json_path.unlink()

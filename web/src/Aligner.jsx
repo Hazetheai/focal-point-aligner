@@ -19,6 +19,8 @@ import {
   targetForMode,
   DEFAULT_CROP_SCALE,
   clampCropScale,
+  transformFocalForFlips,
+  sourceCropForFlips,
   drawRuleOfThirds,
   drawCompositionMask,
 } from './crop.js'
@@ -36,7 +38,7 @@ const HOTKEYS_SHARED = new Set(['ArrowLeft', 'ArrowRight', 'x', 'X', 'p', 'P', '
 /** Extra keys on Original. */
 const HOTKEYS_ORIGINAL = new Set(['Enter', ' ', 'Delete', 'Backspace', 'h', 'H', 'g', 'G', 'i', 'I', 'd', 'D'])
 /** Extra keys on Preview. */
-const HOTKEYS_PREVIEW = new Set(['c', 'C', 'Enter'])
+const HOTKEYS_PREVIEW = new Set(['c', 'C', 'Enter', '<', '>', ',', '.'])
 /** Extra keys on Arrange. */
 const HOTKEYS_ARRANGE = new Set(['c', 'C', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'])
 const PREVIEW_WRAP_KEY = 'fpa-preview-wrap'
@@ -132,8 +134,10 @@ function SortableThumb({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.45 : 1 }
   const aligned = view === 'aligned'
+  const fh = img.flip_h ? 1 : 0
+  const fv = img.flip_v ? 1 : 0
   const src = aligned && img.focal
-    ? mediaUrl('preview', img.id, `?orientation=${orientation || 'landscape'}&f=${img.focal[0]}-${img.focal[1]}&s=${img.crop_scale ?? 1}&n=${encodeURIComponent(img.filename)}&tw=${targetW}&th=${targetH}`)
+    ? mediaUrl('preview', img.id, `?orientation=${orientation || 'landscape'}&f=${img.focal[0]}-${img.focal[1]}&s=${img.crop_scale ?? 1}&n=${encodeURIComponent(img.filename)}&tw=${targetW}&th=${targetH}&fh=${fh}&fv=${fv}`)
     : mediaUrl('thumb', img.id, `?n=${encodeURIComponent(img.filename)}`)
   return (
     <div
@@ -863,13 +867,19 @@ function PreviewStage({
   const imgRef = useRef(null)
   const drag = useRef(null)
   const drawLatest = useRef(() => {})
+  const loadGenRef = useRef(0)
   const img = session.images[session.current_idx]
   const prevImg = session.images[session.current_idx - 1]
   const nextImg = session.images[session.current_idx + 1]
+  const sourceSrc = img
+    ? mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)
+    : ''
   const committed = useMemo(() => ({
     x: img?.focal?.[0] ?? (img?.width || 0) / 2,
     y: img?.focal?.[1] ?? (img?.height || 0) / 2,
     cropScale: clampCropScale(img?.crop_scale ?? DEFAULT_CROP_SCALE),
+    flipH: Boolean(img?.flip_h),
+    flipV: Boolean(img?.flip_v),
   }), [img])
   const [draft, setDraft] = useState(committed)
   const [compare, setCompare] = useState(false)
@@ -877,24 +887,59 @@ function PreviewStage({
   const [neighbor, setNeighbor] = useState(0)
   const [committing, setCommitting] = useState(false)
   const [focalPulse, setFocalPulse] = useState(0)
+  const [sourceReady, setSourceReady] = useState(false)
 
   function nudgeNeedFocal() {
     if (img?.focal) return
     setFocalPulse((n) => n + 1)
   }
 
+  function clearCanvas() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width || 0, canvas.height || 0)
+  }
+
+  useEffect(() => {
+    loadGenRef.current += 1
+    const token = loadGenRef.current
+    setSourceReady(false)
+    clearCanvas()
+    const check = () => {
+      if (token !== loadGenRef.current) return
+      const image = imgRef.current
+      if (!image) return
+      let matches = false
+      try {
+        const abs = new URL(sourceSrc, window.location.href).href
+        matches = image.currentSrc === abs || image.src === abs || image.getAttribute('src') === sourceSrc
+      } catch {
+        matches = image.getAttribute('src') === sourceSrc
+      }
+      if (matches && image.complete && image.naturalWidth) {
+        setSourceReady(true)
+        drawLatest.current()
+      }
+    }
+    requestAnimationFrame(check)
+  }, [img?.id, sourceSrc])
+
   useEffect(() => {
     setDraft(committed)
     setCompare(false)
     setNeighbor(0)
     setFocalPulse(0)
-  }, [img?.id, committed.x, committed.y, committed.cropScale])
+  }, [img?.id, committed.x, committed.y, committed.cropScale, committed.flipH, committed.flipV])
 
   const view = compare ? committed : draft
   const dirty = Boolean(img?.focal) && (
     Math.abs(draft.x - committed.x) > 0.5
     || Math.abs(draft.y - committed.y) > 0.5
     || Math.abs(draft.cropScale - committed.cropScale) > 0.001
+    || Boolean(draft.flipH) !== Boolean(committed.flipH)
+    || Boolean(draft.flipV) !== Boolean(committed.flipV)
   )
 
   async function commit() {
@@ -905,6 +950,8 @@ function PreviewStage({
         x: draft.x,
         y: draft.y,
         cropScale: draft.cropScale,
+        flipH: Boolean(draft.flipH),
+        flipV: Boolean(draft.flipV),
         autoCenter: false,
       })
       setCompare(false)
@@ -917,6 +964,19 @@ function PreviewStage({
 
   const commitRef = useRef(commit)
   commitRef.current = commit
+
+  function stepNeighbor(delta) {
+    setNeighbor((n) => {
+      let next = Math.round((n + delta) * 10) / 10
+      next = Math.max(-1, Math.min(1, next))
+      if (!prevImg && next < 0) next = 0
+      if (!nextImg && next > 0) next = 0
+      return next
+    })
+  }
+
+  const stepNeighborRef = useRef(stepNeighbor)
+  stepNeighborRef.current = stepNeighbor
 
   useEffect(() => {
     if (!compareApiRef) return undefined
@@ -933,6 +993,10 @@ function PreviewStage({
       commit: () => {
         if (!dirty || compare || committing) return false
         commitRef.current?.()
+        return true
+      },
+      stepNeighbor: (delta) => {
+        stepNeighborRef.current?.(delta)
         return true
       },
       nudgeNeedFocal: () => {
@@ -953,6 +1017,8 @@ function PreviewStage({
         x: draft.x,
         y: draft.y,
         cropScale: draft.cropScale,
+        flipH: Boolean(draft.flipH),
+        flipV: Boolean(draft.flipV),
         autoCenter: false,
         index: img.id,
       }
@@ -962,7 +1028,7 @@ function PreviewStage({
     return () => {
       if (draftFlushRef) draftFlushRef.current = null
     }
-  }, [dirty, draft.x, draft.y, draft.cropScale, img, draftFlushRef])
+  }, [dirty, draft.x, draft.y, draft.cropScale, draft.flipH, draft.flipV, img, draftFlushRef])
 
   function applyDraftScale(nextScale, x, y) {
     const image = imgRef.current
@@ -974,13 +1040,28 @@ function PreviewStage({
     )
   }
 
+  function sourceMatches() {
+    const image = imgRef.current
+    if (!image || !sourceSrc) return false
+    try {
+      return image.currentSrc === new URL(sourceSrc, window.location.href).href
+        || image.src === new URL(sourceSrc, window.location.href).href
+        || image.getAttribute('src') === sourceSrc
+    } catch {
+      return image.getAttribute('src') === sourceSrc
+    }
+  }
+
   function draw() {
     const canvas = canvasRef.current
     const image = imgRef.current
     const viewport = viewportRef.current
     const stage = stageRef.current
     if (!img || !canvas || !image || !viewport || !stage) return
-    if (!image.complete || !image.naturalWidth) return
+    if (!sourceReady || !sourceMatches() || !image.complete || !image.naturalWidth) {
+      clearCanvas()
+      return
+    }
     const target = targetForMode(session)
     const maxW = Math.max(1, viewport.clientWidth)
     const maxH = Math.max(1, viewport.clientHeight)
@@ -993,13 +1074,17 @@ function PreviewStage({
     canvas.style.height = `${dh}px`
     stage.style.width = `${dw}px`
     stage.style.height = `${dh}px`
+    const w = image.naturalWidth
+    const h = image.naturalHeight
+    const flipped = transformFocalForFlips(view.x, view.y, w, h, view.flipH, view.flipV)
     const crop = computeCrop(
-      view.x, view.y, image.naturalWidth, image.naturalHeight,
+      flipped.x, flipped.y, w, h,
       target.w, target.h, view.cropScale,
     )
+    const src = sourceCropForFlips(crop, w, h, view.flipH, view.flipV)
     const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, dw, dh)
-    ctx.drawImage(image, crop.x, crop.y, crop.w, crop.h, 0, 0, dw, dh)
+    ctx.drawImage(image, src.x, src.y, src.w, src.h, 0, 0, dw, dh)
     if (showMask && maskImage) {
       drawCompositionMask(ctx, maskImage, 0, 0, dw, dh, {
         invert: maskInvert,
@@ -1050,10 +1135,10 @@ function PreviewStage({
       if (e.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return
       if (e.key === '<' || e.key === ',') {
         e.preventDefault()
-        setNeighbor((n) => Math.max(-1, Math.round((n - 0.1) * 10) / 10))
+        stepNeighborRef.current?.(-0.1)
       } else if (e.key === '>' || e.key === '.') {
         e.preventDefault()
-        setNeighbor((n) => Math.min(1, Math.round((n + 0.1) * 10) / 10))
+        stepNeighborRef.current?.(0.1)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -1065,24 +1150,60 @@ function PreviewStage({
     const image = imgRef.current
     if (!canvas || !image?.naturalWidth) return
     const target = targetForMode(session)
+    const w = image.naturalWidth
+    const h = image.naturalHeight
+    const flipped = transformFocalForFlips(draft.x, draft.y, w, h, draft.flipH, draft.flipV)
     const crop = computeCrop(
-      draft.x, draft.y, image.naturalWidth, image.naturalHeight,
+      flipped.x, flipped.y, w, h,
       target.w, target.h, draft.cropScale,
     )
     const sx = crop.w / canvas.clientWidth
     const sy = crop.h / canvas.clientHeight
+    let panDx = dx
+    let panDy = dy
+    if (draft.flipH) panDx = -panDx
+    if (draft.flipV) panDy = -panDy
     setDraft((d) => {
-      const x = Math.max(0, Math.min(image.naturalWidth, d.x - dx * sx))
-      const y = Math.max(0, Math.min(image.naturalHeight, d.y - dy * sy))
+      const x = Math.max(0, Math.min(w, d.x - panDx * sx))
+      const y = Math.max(0, Math.min(h, d.y - panDy * sy))
       return {
         ...d,
         x,
         y,
         cropScale: bakeCropScale(
-          x, y, image.naturalWidth, image.naturalHeight,
+          x, y, w, h,
           target.w, target.h, d.cropScale,
         ),
       }
+    })
+    setCompare(false)
+  }
+
+  function toggleFlip(axis) {
+    if (!img?.focal) {
+      nudgeNeedFocal()
+      return
+    }
+    const w = img.width || 0
+    const h = img.height || 0
+    setDraft((d) => {
+      if (axis === 'h') {
+        return { ...d, flipH: !d.flipH, x: (w - 1) - d.x }
+      }
+      return { ...d, flipV: !d.flipV, y: (h - 1) - d.y }
+    })
+    setCompare(false)
+  }
+
+  function nudgeZoom(deltaY) {
+    if (!img?.focal) {
+      nudgeNeedFocal()
+      return
+    }
+    if (compare) return
+    setDraft((d) => {
+      const next = nudgeCropScale(d.cropScale, deltaY)
+      return { ...d, cropScale: applyDraftScale(next, d.x, d.y) }
     })
     setCompare(false)
   }
@@ -1129,12 +1250,23 @@ function PreviewStage({
     }
   }
 
+  function onSourceLoad() {
+    const token = loadGenRef.current
+    const image = imgRef.current
+    if (!image || token !== loadGenRef.current) return
+    if (!sourceMatches() || !image.complete || !image.naturalWidth) return
+    setSourceReady(true)
+    drawLatest.current()
+  }
+
   if (!img) return null
 
   function neighborMedia(other) {
     if (!other) return null
+    const fh = other.flip_h ? 1 : 0
+    const fv = other.flip_v ? 1 : 0
     return other.focal
-      ? mediaUrl('preview', other.id, `?orientation=${session.alignment_mode || 'landscape'}&f=${other.focal[0]}-${other.focal[1]}&s=${other.crop_scale ?? 1}&n=${encodeURIComponent(other.filename)}&tw=${session.target_width}&th=${session.target_height}`)
+      ? mediaUrl('preview', other.id, `?orientation=${session.alignment_mode || 'landscape'}&f=${other.focal[0]}-${other.focal[1]}&s=${other.crop_scale ?? 1}&n=${encodeURIComponent(other.filename)}&tw=${session.target_width}&th=${session.target_height}&fh=${fh}&fv=${fv}`)
       : mediaUrl('original', other.id, `?n=${encodeURIComponent(other.filename)}`)
   }
 
@@ -1143,86 +1275,148 @@ function PreviewStage({
   const neighborOpacity = Math.abs(neighbor)
   const neighborSrc = showPrev ? neighborMedia(prevImg) : showNext ? neighborMedia(nextImg) : null
   const neighborLabel = showPrev
-    ? (prevImg ? `Previous ${Math.round(neighborOpacity * 100)}%` : 'No previous image')
+    ? (prevImg ? `Prev ${Math.round(neighborOpacity * 100)}%` : 'No previous')
     : showNext
-      ? (nextImg ? `Next ${Math.round(neighborOpacity * 100)}%` : 'No next image')
-      : 'Neighbors off'
+      ? (nextImg ? `Next ${Math.round(neighborOpacity * 100)}%` : 'No next')
+      : 'Neighbors'
 
   const target = targetForMode(session)
   const zoomLabel = img.focal
-    ? `Zoom ${zoomFactor(
+    ? `${zoomFactor(
       view.x, view.y, img.width || 0, img.height || 0,
       target.w, target.h, view.cropScale,
     ).toFixed(2)}×`
-    : 'Zoom —'
+    : '—'
+
+  const prevDisabled = !prevImg || neighbor <= -1
+  const nextDisabled = !nextImg || neighbor >= 1
 
   return (
     <div className="workspace preview">
       <div className="preview-toolbar">
-        <button
-          type="button"
-          aria-selected={compare}
-          disabled={Boolean(img.focal) && !dirty}
-          title={
-            !img.focal
-              ? 'Set a focal on Original first'
-              : dirty
-                ? 'Toggle saved vs draft framing (C)'
-                : 'Make a pan/zoom change to enable Compare'
-          }
-          onClick={() => {
-            if (!img.focal) {
-              nudgeNeedFocal()
-              return
+        <div className="preview-toolbar-left">
+          <button
+            type="button"
+            aria-selected={compare}
+            disabled={Boolean(img.focal) && !dirty}
+            title={
+              !img.focal
+                ? 'Set a focal on Original first'
+                : dirty
+                  ? 'Toggle saved vs draft framing (C)'
+                  : 'Make a pan/zoom change to enable Compare'
             }
-            setCompare((v) => !v)
-          }}
-        >
-          Compare (C)
-        </button>
-        <button
-          type="button"
-          disabled={Boolean(img.focal) && (!dirty || committing || compare)}
-          title={!img.focal ? 'Set a focal on Original first' : undefined}
-          onClick={() => {
-            if (!img.focal) {
-              nudgeNeedFocal()
-              return
-            }
-            commit()
-          }}
-        >
-          {committing ? 'Saving…' : 'Commit'}
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          aria-pressed={wrapNav}
-          title={wrapNav ? 'Wrapping on: arrows loop the list' : 'Wrapping off: stop at first/last'}
-          onClick={() => setWrapNav((v) => !v)}
-        >
-          Wrap {wrapNav ? 'On' : 'Off'}
-        </button>
-        <span className={`muted${img.focal ? '' : ' preview-zoom-muted'}`}>{zoomLabel}</span>
-        <span className="muted">
-          {img.focal
-            ? (compare ? 'Showing saved framing' : dirty ? 'Unsaved fine-tune' : 'Drag to pan · MMB/wheel zoom · < prev · > next')
-            : 'Set a focal on Original before fine-tuning'}
-        </span>
-        <span className="muted preview-opacity">{neighborLabel}</span>
+            onClick={() => {
+              if (!img.focal) {
+                nudgeNeedFocal()
+                return
+              }
+              setCompare((v) => !v)
+            }}
+          >
+            Compare (C)
+          </button>
+          <button
+            type="button"
+            disabled={Boolean(img.focal) && (!dirty || committing || compare)}
+            title={!img.focal ? 'Set a focal on Original first' : undefined}
+            onClick={() => {
+              if (!img.focal) {
+                nudgeNeedFocal()
+                return
+              }
+              commit()
+            }}
+          >
+            {committing ? 'Saving…' : 'Commit'}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            aria-pressed={wrapNav}
+            title={wrapNav ? 'Wrapping on: arrows loop the list' : 'Wrapping off: stop at first/last'}
+            onClick={() => setWrapNav((v) => !v)}
+          >
+            Wrap {wrapNav ? 'On' : 'Off'}
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            aria-pressed={Boolean(view.flipH)}
+            disabled={Boolean(img.focal) && compare}
+            title={!img.focal ? 'Set a focal on Original first' : 'Flip horizontal'}
+            onClick={() => toggleFlip('h')}
+          >
+            Flip H
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            aria-pressed={Boolean(view.flipV)}
+            disabled={Boolean(img.focal) && compare}
+            title={!img.focal ? 'Set a focal on Original first' : 'Flip vertical'}
+            onClick={() => toggleFlip('v')}
+          >
+            Flip V
+          </button>
+        </div>
+        <div className="preview-toolbar-center">
+          <button
+            type="button"
+            className="secondary"
+            disabled={prevDisabled}
+            title="Previous neighbor (−10%)"
+            onClick={() => stepNeighbor(-0.1)}
+          >
+            Prev
+          </button>
+          <span className="muted preview-opacity">{neighborLabel}</span>
+          <button
+            type="button"
+            className="secondary"
+            disabled={nextDisabled}
+            title="Next neighbor (+10%)"
+            onClick={() => stepNeighbor(0.1)}
+          >
+            Next
+          </button>
+        </div>
+        <div className="preview-toolbar-right">
+          <span className="muted">Zoom</span>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!img.focal || compare}
+            title="Zoom out"
+            onClick={() => nudgeZoom(1)}
+          >
+            −
+          </button>
+          <span className={`muted${img.focal ? '' : ' preview-zoom-muted'}`}>{zoomLabel}</span>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!img.focal || compare}
+            title="Zoom in"
+            onClick={() => nudgeZoom(-1)}
+          >
+            +
+          </button>
+        </div>
       </div>
       <div className="preview-viewport" ref={viewportRef}>
         <div
-          className={`preview-frame ${img.focal && !compare ? 'interactive' : ''}`}
+          className={`preview-frame ${img.focal && !compare ? 'interactive' : ''}${sourceReady ? '' : ' is-loading'}`}
           ref={stageRef}
+          style={{ opacity: sourceReady ? 1 : 0 }}
         >
           <img
             ref={imgRef}
             className="preview-source"
-            src={mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)}
+            src={sourceSrc}
             alt=""
             draggable={false}
-            onLoad={() => drawLatest.current()}
+            onLoad={onSourceLoad}
           />
           <canvas
             ref={canvasRef}
@@ -1300,6 +1494,7 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
   const [compareA, setCompareA] = useState('original')
   const [compareB, setCompareB] = useState('1')
   const [compareShow, setCompareShow] = useState('a') // 'a' | 'b'
+  const [arrangeMenuOpen, setArrangeMenuOpen, arrangeMenuRef] = useDismissableOpen(false)
   const workspaceRef = useRef(null)
   const colsRef = useRef(cols)
   const dragOrigin = useRef(cols)
@@ -1367,6 +1562,8 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
       y: p.y,
       auto_center: Boolean(p.autoCenter),
       crop_scale: clampCropScale(p.cropScale ?? DEFAULT_CROP_SCALE),
+      flip_h: p.flipH != null ? Boolean(p.flipH) : undefined,
+      flip_v: p.flipV != null ? Boolean(p.flipV) : undefined,
       index: session.current_idx,
     })
     setPending(null)
@@ -1537,6 +1734,8 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
       y: pt.y,
       auto_center: Boolean(pt.autoCenter),
       crop_scale: clampCropScale(pt.cropScale ?? DEFAULT_CROP_SCALE),
+      flip_h: Boolean(pt.flipH),
+      flip_v: Boolean(pt.flipV),
       index: session.current_idx,
     })
     setSession(next)
@@ -1896,10 +2095,26 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
               <div className="arrange-toolbar-left">
                 <button type="button" aria-selected={arrangeView === 'original'} onClick={() => setArrangeView('original')}>Original</button>
                 <button type="button" aria-selected={arrangeView === 'aligned'} onClick={() => setArrangeView('aligned')}>Aligned</button>
-                <span className="muted">{arrangeView === 'original' ? 'Before focal crop' : 'After aligned crop'}</span>
+                <label className="muted arrange-compare">
+                  Compare
+                  <select value={compareA} onChange={(e) => setCompareA(e.target.value)}>
+                    {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((s) => (
+                      <option key={`a-${s}`} value={s}>{s === 'original' ? 'Original' : s}</option>
+                    ))}
+                  </select>
+                  vs
+                  <select value={compareB} onChange={(e) => setCompareB(e.target.value)}>
+                    {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((s) => (
+                      <option key={`b-${s}`} value={s}>{s === 'original' ? 'Original' : s}</option>
+                    ))}
+                  </select>
+                </label>
+                <button type="button" className="secondary" onClick={toggleCompare}>
+                  Show {compareShow === 'a' ? compareB : compareA} (C)
+                </button>
               </div>
               <div className="arrange-toolbar-center">
-                <div className="arrange-auto-actions">
+                <div className="image-facts arrange-menu" ref={arrangeMenuRef}>
                   {(arrangeBusy || arrangeStatus) && (
                     <div className={`arrange-progress-float${arrangeBusy ? ' busy' : ' done'}`} role="status">
                       <div className="arrange-progress-label">
@@ -1927,42 +2142,83 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
                       )}
                     </div>
                   )}
-                  <div className="arrange-auto-buttons">
-                    <button type="button" className="secondary" disabled={arrangeBusy} onClick={() => runAutoArrange('color')}>Color</button>
-                    <button type="button" className="secondary" disabled={arrangeBusy} onClick={() => runAutoArrange('depth', { near_to_far: true })}>Depth near→far</button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={arrangeBusy}
-                      title="Uses the selected thumbnail as the ORB lead — hover to highlight it"
-                      onMouseEnter={() => setLeadHover(true)}
-                      onMouseLeave={() => setLeadHover(false)}
-                      onFocus={() => setLeadHover(true)}
-                      onBlur={() => setLeadHover(false)}
-                      onClick={() => runAutoArrange('lead', { lead_index: session.current_idx, axis: 'x' })}
-                    >
-                      Lead match
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary"
-                      disabled={arrangeBusy}
-                      title="Sorts left→right by largest detected face center"
-                      onClick={() => runAutoArrange('faces')}
-                    >
-                      Faces
-                    </button>
-                    <button
-                      type="button"
-                      className={session.arrangement_reversed ? '' : 'secondary'}
-                      aria-selected={Boolean(session.arrangement_reversed)}
-                      disabled={arrangeBusy || session.total < 2}
-                      title={session.arrangement_reversed ? 'Order is reversed — click to restore' : 'Reverse current order in place (updates active slot)'}
-                      onClick={() => reverseArrange()}
-                    >
-                      Reverse
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="facts-toggle"
+                    onClick={() => setArrangeMenuOpen((v) => !v)}
+                    aria-expanded={arrangeMenuOpen}
+                    title="AutoArrange, slots, and info"
+                  >
+                    <span className="facts-role">Arrange</span>
+                    <span className="facts-caret" aria-hidden="true">{arrangeMenuOpen ? '▴' : '▾'}</span>
+                  </button>
+                  {arrangeMenuOpen && (
+                    <div className="facts-panel arrange-menu-panel">
+                      <div className="arrange-menu-actions">
+                        <button type="button" className="secondary" disabled={arrangeBusy} onClick={() => runAutoArrange('color')}>Color</button>
+                        <button type="button" className="secondary" disabled={arrangeBusy} onClick={() => runAutoArrange('depth', { near_to_far: true })}>Depth near→far</button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={arrangeBusy}
+                          title="Uses the selected thumbnail as the ORB lead — hover to highlight it"
+                          onMouseEnter={() => setLeadHover(true)}
+                          onMouseLeave={() => setLeadHover(false)}
+                          onFocus={() => setLeadHover(true)}
+                          onBlur={() => setLeadHover(false)}
+                          onClick={() => runAutoArrange('lead', { lead_index: session.current_idx, axis: 'x' })}
+                        >
+                          Lead match
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={arrangeBusy}
+                          title="Sorts left→right by largest detected face center"
+                          onClick={() => runAutoArrange('faces')}
+                        >
+                          Faces
+                        </button>
+                        <button
+                          type="button"
+                          className={session.arrangement_reversed ? '' : 'secondary'}
+                          aria-selected={Boolean(session.arrangement_reversed)}
+                          disabled={arrangeBusy || session.total < 2}
+                          title={session.arrangement_reversed ? 'Order is reversed — click to restore' : 'Reverse current order in place (updates active slot)'}
+                          onClick={() => reverseArrange()}
+                        >
+                          Reverse
+                        </button>
+                      </div>
+                      <div className="panel-section-label">Slots</div>
+                      <div className="arrange-menu-slots">
+                        {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((slot) => {
+                          const filled = slot === 'original' || Boolean(session.arrangements?.[slot])
+                          const active = (session.arrangement_active || 'original') === slot
+                          return (
+                            <button
+                              key={slot}
+                              type="button"
+                              className={active ? '' : 'secondary'}
+                              disabled={!filled}
+                              title={slot === 'original' ? 'Original (0)' : `Slot ${slot}`}
+                              onClick={() => recallSlot(slot)}
+                            >
+                              {slot === 'original' ? 'Orig' : slot}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <div className="arrange-menu-info" role="note">
+                        <p><strong>Color</strong> — groups by HSV buckets (white / gray / black / hue).</p>
+                        <p><strong>Depth near→far</strong> — Depth-Anything estimate; use Reverse for far→near.</p>
+                        <p><strong>Lead match</strong> — ORB feature match against the selected thumbnail (hover Lead to see which).</p>
+                        <p><strong>Faces</strong> — left→right by detected face centers (YuNet).</p>
+                        <p><strong>Reverse</strong> — flips the active slot’s order in place (button stays lit while reversed).</p>
+                        <p><strong>Slots 0–9</strong> — store and recall arrangements; leaving Arrange commits a manual draft.</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="arrange-toolbar-right">
@@ -1970,57 +2226,6 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
                 <button type="button" className="secondary" onClick={() => nudgeArrangeZoom(-0.1)} title="Smaller thumbs">−</button>
                 <span className="muted">{Math.round(arrangeZoom * 100)}%</span>
                 <button type="button" className="secondary" onClick={() => nudgeArrangeZoom(0.1)} title="Larger thumbs">+</button>
-              </div>
-            </div>
-            <div className="arrange-toolbar-row">
-              <div className="arrange-toolbar-left">
-                <label className="muted arrange-compare">
-                  Compare
-                  <select value={compareA} onChange={(e) => setCompareA(e.target.value)}>
-                    {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((s) => (
-                      <option key={`a-${s}`} value={s}>{s === 'original' ? 'Original' : s}</option>
-                    ))}
-                  </select>
-                  vs
-                  <select value={compareB} onChange={(e) => setCompareB(e.target.value)}>
-                    {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((s) => (
-                      <option key={`b-${s}`} value={s}>{s === 'original' ? 'Original' : s}</option>
-                    ))}
-                  </select>
-                </label>
-                <button type="button" className="secondary" onClick={toggleCompare}>
-                  Show {compareShow === 'a' ? compareB : compareA} (C)
-                </button>
-              </div>
-              <div className="arrange-toolbar-right">
-                <span className="muted">Slots</span>
-                {['original', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map((slot) => {
-                  const filled = slot === 'original' || Boolean(session.arrangements?.[slot])
-                  const active = (session.arrangement_active || 'original') === slot
-                  return (
-                    <button
-                      key={slot}
-                      type="button"
-                      className={active ? '' : 'secondary'}
-                      disabled={!filled}
-                      title={slot === 'original' ? 'Original (0)' : `Slot ${slot}`}
-                      onClick={() => recallSlot(slot)}
-                    >
-                      {slot === 'original' ? 'Orig' : slot}
-                    </button>
-                  )
-                })}
-                <details className="arrange-info">
-                  <summary className="arrange-info-btn" title="How AutoArrange works" aria-label="AutoArrange info">ⓘ</summary>
-                  <div className="arrange-info-panel" role="note">
-                    <p><strong>Color</strong> — groups by HSV buckets (white / gray / black / hue).</p>
-                    <p><strong>Depth near→far</strong> — Depth-Anything estimate; use Reverse for far→near.</p>
-                    <p><strong>Lead match</strong> — ORB feature match against the selected thumbnail (hover Lead to see which).</p>
-                    <p><strong>Faces</strong> — left→right by detected face centers (YuNet).</p>
-                    <p><strong>Reverse</strong> — flips the active slot’s order in place (button stays lit while reversed).</p>
-                    <p><strong>Slots 0–9</strong> — store and recall arrangements; leaving Arrange commits a manual draft.</p>
-                  </div>
-                </details>
               </div>
             </div>
           </div>
@@ -2123,6 +2328,16 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
                 if (!img?.focal) previewCompareRef.current?.nudgeNeedFocal?.()
                 else previewCompareRef.current?.toggle?.()
               }}
+            />
+            <Hotkey
+              kbd="<"
+              label="Prev neighbor"
+              onClick={() => previewCompareRef.current?.stepNeighbor?.(-0.1)}
+            />
+            <Hotkey
+              kbd=">"
+              label="Next neighbor"
+              onClick={() => previewCompareRef.current?.stepNeighbor?.(0.1)}
             />
           </>
         )}

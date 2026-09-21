@@ -152,6 +152,27 @@ def test_set_focal_with_crop_scale(client, tmp_path):
     assert abs((crop["y"] + crop["h"] / 2) - 120) < 2
 
 
+def test_set_focal_with_flips(client, tmp_path):
+    src = _imgs(tmp_path)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    r = client.post("/focal", json={
+        "x": 100, "y": 80, "index": 0, "crop_scale": 1.0,
+        "flip_h": True, "flip_v": False,
+    })
+    assert r.status_code == 200
+    im = r.json()["images"][0]
+    assert im["flip_h"] is True
+    assert im["flip_v"] is False
+    data = json.loads((src / "focal_points.json").read_text())
+    assert data["im00.jpg"]["flip_h"] is True
+    assert data["im00.jpg"]["flip_v"] is False
+
+
 def test_crop_scale_is_per_image(client, tmp_path):
     src = _imgs(tmp_path, 2)
     client.post("/session", json={
