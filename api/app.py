@@ -152,6 +152,18 @@ class ArrangeLeaveBody(BaseModel):
     commit: bool = True
 
 
+class VideoRangeBody(BaseModel):
+    index: Optional[int] = None
+    in_frame: Optional[int] = None
+    out_frame: Optional[int] = None
+    work_frame: Optional[int] = None
+
+
+class VideoSplitBody(BaseModel):
+    index: Optional[int] = None
+    at_frame: int
+
+
 def pick_folder_dialog(title: str = "Select folder") -> Optional[str]:
     """Open a native folder-only picker. Returns an absolute path, or None if cancelled."""
     system = platform.system()
@@ -653,8 +665,13 @@ def export_images(body: ExportBody):
         total = core.total_images
         q: Queue = Queue()
 
-        def progress(done, tot, name):
-            q.put(("progress", {"done": done, "total": tot, "filename": name}))
+        def progress(done, tot, name, error=None):
+            payload = {"done": done, "total": tot, "filename": name}
+            if error:
+                payload["error"] = error
+                q.put(("item_error", payload))
+            else:
+                q.put(("progress", payload))
 
         def worker():
             try:
@@ -672,6 +689,8 @@ def export_images(body: ExportBody):
             kind, payload = q.get()
             if kind == "progress":
                 yield f"data: {json.dumps({'phase': 'export', **payload})}\n\n"
+            elif kind == "item_error":
+                yield f"data: {json.dumps({'phase': 'item_error', **payload})}\n\n"
             elif kind == "done":
                 yield f"data: {json.dumps({**payload, 'phase': 'complete', 'complete': True, 'done': payload.get('total', total)})}\n\n"
                 break
@@ -695,6 +714,11 @@ def media_original(idx: int):
     if not (0 <= idx < core.total_images):
         raise HTTPException(404, "Index out of range")
     path = core.image_files[idx]
+    if core.is_video(idx):
+        frame_path = core.ensure_frame_jpeg(idx)
+        if frame_path is None:
+            raise HTTPException(404, "Could not extract video frame")
+        return _media_file(frame_path, "image/jpeg", cache=False)
     suffix = path.suffix.lower()
     mime = {
         ".png": "image/png",
@@ -704,6 +728,22 @@ def media_original(idx: int):
         ".tif": "image/tiff",
     }.get(suffix, "image/jpeg")
     return _media_file(path, mime)
+
+
+@app.get("/media/frame/{idx}")
+def media_frame(idx: int, frame: Optional[int] = None):
+    """JPEG of a specific video frame (defaults to work_frame)."""
+    core = _core()
+    if not (0 <= idx < core.total_images):
+        raise HTTPException(404, "Index out of range")
+    if not core.is_video(idx):
+        # Images: ignore frame and return the original file as JPEG-ish.
+        path = core.image_files[idx]
+        return _media_file(path, "image/jpeg", cache=False)
+    frame_path = core.ensure_frame_jpeg(idx, frame_idx=frame)
+    if frame_path is None:
+        raise HTTPException(404, "Could not extract video frame")
+    return _media_file(frame_path, "image/jpeg", cache=False)
 
 
 @app.get("/media/thumb/{idx}")
@@ -726,6 +766,36 @@ def media_preview(idx: int, orientation: str = "landscape"):
     core.current_idx = old
     path = core.preview_path(core.image_files[idx], orientation)
     return _media_file(path, cache=False)
+
+
+@app.post("/video/range")
+def video_range(body: VideoRangeBody):
+    core = _core()
+    idx = body.index if body.index is not None else core.current_idx
+    if not (0 <= idx < core.total_images):
+        raise HTTPException(400, "Index out of range")
+    if not core.is_video(idx):
+        raise HTTPException(400, "Not a video")
+    if not core.set_video_range(
+        idx,
+        in_frame=body.in_frame,
+        out_frame=body.out_frame,
+        work_frame=body.work_frame,
+    ):
+        raise HTTPException(400, "Could not update video range")
+    return core.session_snapshot()
+
+
+@app.post("/video/split")
+def video_split(body: VideoSplitBody):
+    core = _core()
+    idx = body.index if body.index is not None else core.current_idx
+    if not (0 <= idx < core.total_images):
+        raise HTTPException(400, "Index out of range")
+    ok, err = core.split_video_at(idx, body.at_frame)
+    if not ok:
+        raise HTTPException(400, err or "Split failed")
+    return core.session_snapshot()
 
 
 @app.post("/batch")

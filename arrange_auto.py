@@ -38,8 +38,19 @@ COLOR_BUCKETS = [
 ]
 
 
-def _load_bgr(path, max_side=256):
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm'}
+
+
+def _load_bgr(path, max_side=256, frame_idx=None):
+    path = Path(path)
+    img = None
+    if path.suffix.lower() in VIDEO_EXTENSIONS:
+        # Lazy import avoids circular import at module load (core imports us).
+        from aligner_core import extract_video_frame
+        idx = 0 if frame_idx is None else int(frame_idx)
+        img = extract_video_frame(path, idx)
+    else:
+        img = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if img is None:
         return None
     h, w = img.shape[:2]
@@ -49,9 +60,17 @@ def _load_bgr(path, max_side=256):
     return img
 
 
-def classify_dominant_color(path) -> tuple[str, float]:
+def _frame_for(frame_indices, i):
+    if not frame_indices:
+        return None
+    if i < 0 or i >= len(frame_indices):
+        return None
+    return frame_indices[i]
+
+
+def classify_dominant_color(path, frame_idx=None) -> tuple[str, float]:
     """Return (label, sort_key) — whites/grays/blacks first by lightness, else hue bucket."""
-    img = _load_bgr(path, 192)
+    img = _load_bgr(path, 192, frame_idx=frame_idx)
     if img is None:
         return ("unknown", 999.0)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -95,12 +114,12 @@ def classify_dominant_color(path) -> tuple[str, float]:
     return (best_name, 200.0 + order.get(best_name, 0) * 10 + lightness)
 
 
-def sort_indices_by_color(paths: list[Path], progress=None) -> tuple[list[int], list[str]]:
+def sort_indices_by_color(paths: list[Path], progress=None, frame_indices=None) -> tuple[list[int], list[str]]:
     scored = []
     labels = []
     total = len(paths)
     for i, p in enumerate(paths):
-        label, key = classify_dominant_color(p)
+        label, key = classify_dominant_color(p, frame_idx=_frame_for(frame_indices, i))
         scored.append((key, i))
         labels.append(label)
         if progress:
@@ -188,9 +207,9 @@ def _depth_session():
     return ort.InferenceSession(str(model), sess_options=opts, providers=["CPUExecutionProvider"])
 
 
-def mean_center_depth(path, session=None) -> float:
+def mean_center_depth(path, session=None, frame_idx=None) -> float:
     """Higher = farther (typical inverse-depth models vary; we use mean of center crop)."""
-    img = _load_bgr(path, 384)
+    img = _load_bgr(path, 384, frame_idx=frame_idx)
     if img is None:
         return 0.0
     sess = session or _depth_session()
@@ -215,7 +234,8 @@ def mean_center_depth(path, session=None) -> float:
     return float(center.mean())
 
 
-def sort_indices_by_depth(paths: list[Path], near_to_far: bool = True, progress=None) -> list[int]:
+def sort_indices_by_depth(paths: list[Path], near_to_far: bool = True, progress=None,
+                          frame_indices=None) -> list[int]:
     total = len(paths)
     if progress:
         progress(0, total, "loading depth model…")
@@ -223,7 +243,7 @@ def sort_indices_by_depth(paths: list[Path], near_to_far: bool = True, progress=
     scored = []
     for i, p in enumerate(paths):
         try:
-            d = mean_center_depth(p, session=session)
+            d = mean_center_depth(p, session=session, frame_idx=_frame_for(frame_indices, i))
         except Exception:
             d = 0.0
         scored.append((d, i))
@@ -259,12 +279,13 @@ def lead_match_sort(
     roi=None,
     axis: str = "x",
     progress=None,
+    frame_indices=None,
 ) -> list[int]:
     """Sort by matched feature centroid along axis relative to lead image ROI/features."""
     total = len(paths)
     if progress:
         progress(0, total, "scanning lead…")
-    lead_img = _load_bgr(paths[lead_index], 640)
+    lead_img = _load_bgr(paths[lead_index], 640, frame_idx=_frame_for(frame_indices, lead_index))
     if lead_img is None:
         return list(range(len(paths)))
     # Scale ROI if provided in original coords — assume already in loaded image space if small
@@ -274,7 +295,7 @@ def lead_match_sort(
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
     scored = []
     for i, p in enumerate(paths):
-        img = _load_bgr(p, 640)
+        img = _load_bgr(p, 640, frame_idx=_frame_for(frame_indices, i))
         if img is None:
             scored.append((1e9, i))
             if progress:
@@ -332,9 +353,9 @@ def _face_detector(input_size=(320, 320)):
     return cv2.FaceDetectorYN_create(str(model), "", input_size, 0.6, 0.3, 5000)
 
 
-def face_centroid_x(path, detector=None) -> Optional[float]:
+def face_centroid_x(path, detector=None, frame_idx=None) -> Optional[float]:
     """Return normalized face center x in [0,1] using OpenCV YuNet (FaceDetectorYN)."""
-    img = _load_bgr(path, 640)
+    img = _load_bgr(path, 640, frame_idx=frame_idx)
     if img is None:
         return None
     h, w = img.shape[:2]
@@ -354,7 +375,7 @@ def face_centroid_x(path, detector=None) -> Optional[float]:
     return (x + fw / 2) / max(1.0, float(w))
 
 
-def sort_indices_by_faces(paths: list[Path], progress=None) -> list[int]:
+def sort_indices_by_faces(paths: list[Path], progress=None, frame_indices=None) -> list[int]:
     total = len(paths)
     if progress:
         progress(0, total, "loading face model…")
@@ -362,7 +383,7 @@ def sort_indices_by_faces(paths: list[Path], progress=None) -> list[int]:
     scored = []
     for i, p in enumerate(paths):
         try:
-            cx = face_centroid_x(p, detector=detector)
+            cx = face_centroid_x(p, detector=detector, frame_idx=_frame_for(frame_indices, i))
         except RuntimeError:
             raise
         except Exception:

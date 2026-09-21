@@ -4,19 +4,19 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 
 ## What this project is
 
-**Focal Point Aligner** — click a focal point on each photo in a folder; export aligned JPEGs at a shared target size with that point centered.
+**Focal Point Aligner** — click a focal point on each photo (or video work-frame) in a folder; export aligned JPEGs / MP4s at a shared target size with that point centered.
 
 Current GUI: **React (Vite) + FastAPI**, with an optional **Tauri** macOS `.app` shell. There is no PyQt GUI.
 
 Workflow:
 
 1. Opener: Single / Batch / **Import** → target size (ratio + resolution presets, or manual W×H) → Start. Import pastes URLs or picks `.txt` / folder-of-lists, downloads into a batch root, then continues as Batch (align → Merge / Move aligned).
-2. **Original**: click/drag focal; wheel resizes crop box; Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Header can change target size mid-session (live crop/preview retarget).
+2. **Original**: click/drag focal; wheel resizes crop box; Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Header can change target size mid-session (live crop/preview retarget). For **videos**, a scrubber under the stage sets work/in/out frames; **Set Out** offers Trim vs Split (ffmpeg).
 3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel / Zoom ± to change `crop_scale`; **Flip H / Flip V** toggles (draft dirty includes flips; pan deltas negate under flips); neighbor **Prev / Next** (±0.1 opacity, clamped when no neighbor); Compare (C) + Commit (**Enter** when draft is dirty and not comparing). Toolbar is one row: left Compare/Commit/Wrap/flips · center neighbors · right Zoom −/label/+.
 4. **Arrange**: one toolbar row — Original/Aligned + slot Compare/Show (C) on the left; an **Arrange** dropdown (AutoArrange Color/Depth/Lead/Faces, Reverse, slots Orig+1–9, info) mid-right with progress floating above the trigger; Zoom −/%/+ on the far right. Drag thumbnails to reorder; Reverse toggles order in the active slot (button stays lit while reversed); hotkeys `0`–`9` recall slots; Manual DnD commits to a slot when leaving Arrange.
-5. **E** / Export writes `{idx:04d}.jpg` to the output folder (live SSE progress; focals JSON is kept).
+5. **E** / Export writes `{idx:04d}.jpg` for images and `{idx:04d}.mp4` for videos (ffmpeg required for video; live SSE progress; focals JSON is kept).
 6. **Esc** (or Done) returns to the opener; in batch mode it opens the next pending folder.
-7. Original **D** duplicates the current image on disk (`name__dup.ext`) and inserts it after the current index with the same focal/crop settings.
+7. Original **D** duplicates the current media on disk (`name__dup.ext`) and inserts it after the current index with the same focal/crop settings.
 
 ## One command for the GUI
 
@@ -40,6 +40,16 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 - Opener and Aligner expose ratio chips (16:9, 2:1, 1:1, 4:5, 4:3) and typical resolutions (720p–4K, social squares, etc.). Width/Height remain editable.
 - `POST /session/target` updates `target_width`/`target_height`, prefs, clears preview cache, and marks all previews dirty. Crop overlays and Preview recompute immediately.
+
+## Video media
+
+- Extensions: `.mp4`, `.mov`, `.m4v`, `.webm` (with images under `MEDIA_EXTENSIONS`). Invalid videos go to `discarded/invalid/` like bad images.
+- Discovery / batch folders treat videos as media (same queue / merge rules).
+- Session images include `media_kind` (`image`|`video`) and for videos: `fps`, `frame_count`, `duration_ms`, `in_frame`, `out_frame`, `work_frame` (defaults `0`, `frame_count-1`, mid).
+- Original stage uses `GET /media/frame/{idx}?frame=N` (cached under `.fpa_cache/frames/`). Thumbs / Preview / AutoArrange load the **work_frame**.
+- Scrubber: Set In / Set Out / work playhead. Set Out prompts **Trim** (keep `out_frame`) vs **Split** (`POST /video/split` extracts the remainder via ffmpeg as `{stem}__part2.ext`). Range: `POST /video/range`.
+- Aligned export: images → `{idx:04d}.jpg`; videos → `{idx:04d}.mp4` (decode in..out inclusive, apply flips + `render_aligned`, pipe BGR24 to ffmpeg `libx264` / `yuv420p`). Requires system **ffmpeg** on `PATH` (no new pip dep). Missing ffmpeg → per-item SSE `item_error`.
+- Persist `in_frame` / `out_frame` / `work_frame` on video entries in `focal_points.json`.
 
 ## Import download
 
@@ -74,7 +84,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Stack & tests
 
-- Python 3.x, FastAPI, uvicorn, opencv-python, numpy, pillow, httpx, onnxruntime. See `requirements.txt` (no PyQt).
+- Python 3.x, FastAPI, uvicorn, opencv-python, numpy, pillow, httpx, onnxruntime. See `requirements.txt` (no PyQt). System **ffmpeg** required for video split/export (not a pip package).
 - Web: Vite + React in `web/`. Root `package.json` launches the stack / Tauri.
 - Venv lives at `./venv` (gitignored).
 - Tests: `./venv/bin/python -m pytest tests/ -v`
@@ -107,11 +117,11 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - `discarded: set[str]` — filenames.
 - `current_idx: int` — shared across Original / Preview / Arrange. Tab switches must not change it.
 - `json_path` = `<input_folder>/focal_points.json` (migrates from `<output_folder>/focal_points.json` once if needed). Export cleanup does **not** delete it.
-- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`, `flip_h`, `flip_v`.
+- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`, `flip_h`, `flip_v`, `media_kind`, and for videos `fps` / `frame_count` / `duration_ms` / `in_frame` / `out_frame` / `work_frame`.
 
 ### Persistence (`focal_points.json`)
 
-- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `flip_h`, `flip_v`, `timestamp`).
+- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `flip_h`, `flip_v`, `timestamp`; videos also `in_frame` / `out_frame` / `work_frame` / `media_kind`).
 - Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`, `arrangements`, `arrangement_active`, `arrangement_reversed`.
 - `load_focal_points()` re-applies `order` via `_reorder_files_by_names()`.
 - Thumbs/previews: `<input>/.fpa_cache/` keyed by **filename**, not index (reorder must not reuse the wrong JPEG). Media URLs should cache-bust with `?n=<filename>`.
@@ -181,6 +191,7 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip H/V �
 - `tests/test_batch.py` — discovery, merge, move-aligned.
 - `tests/test_arrange_order.py` — discard → reorder → persist; **current_idx follows the file**.
 - `tests/test_presets_import_arrange.py` — size retarget, import SSE, AutoArrange SSE, reverse lit state.
+- `tests/test_video_media.py` — mixed discovery, video JSON fields, frame extract, trim/split, MP4 export (skips when ffmpeg missing).
 - Run: `./venv/bin/python -m pytest tests/ -v`
 
 ## Building

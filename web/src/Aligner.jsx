@@ -572,14 +572,142 @@ function SidePane({ img, label, onOpen }) {
       </div>
     )
   }
+  const src = img.media_kind === 'video'
+    ? mediaUrl('frame', img.id, `?frame=${img.work_frame ?? 0}&n=${encodeURIComponent(img.filename)}&wf=${img.work_frame ?? 0}`)
+    : mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)
   return (
     <button type="button" className="side-thumb" onClick={onOpen} title={`Go to ${img.filename}`}>
       <span className="side-label">{label}</span>
       <span className="side-frame">
-        <img src={mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)} alt={img.filename} />
+        <img src={src} alt={img.filename} />
       </span>
       <span className="side-name">{img.filename}</span>
     </button>
+  )
+}
+
+function originalStageSrc(img) {
+  if (!img) return ''
+  if (img.media_kind === 'video') {
+    const wf = img.work_frame ?? 0
+    return mediaUrl('frame', img.id, `?frame=${wf}&n=${encodeURIComponent(img.filename)}&wf=${wf}`)
+  }
+  return mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)
+}
+
+function VideoScrubber({ img, onSession, onLocalWork, onError }) {
+  const [busy, setBusy] = useState(false)
+  const [splitPrompt, setSplitPrompt] = useState(null) // { atFrame }
+  const [localWork, setLocalWork] = useState(img?.work_frame ?? 0)
+  useEffect(() => {
+    setLocalWork(img?.work_frame ?? 0)
+  }, [img?.id, img?.work_frame, img?.filename])
+
+  if (!img || img.media_kind !== 'video') return null
+  const frameCount = Math.max(1, img.frame_count || 1)
+  const inF = img.in_frame ?? 0
+  const outF = img.out_frame ?? frameCount - 1
+  const work = localWork
+  const maxFrame = frameCount - 1
+
+  async function patchRange(partial) {
+    setBusy(true)
+    try {
+      const next = await api.videoRange({ index: img.id, ...partial })
+      onSession(next)
+    } catch (err) {
+      onError?.(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function onSetOut() {
+    setBusy(true)
+    try {
+      const next = await api.videoRange({ index: img.id, out_frame: work, work_frame: work })
+      onSession(next)
+      setSplitPrompt({ atFrame: work })
+    } catch (err) {
+      onError?.(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmTrim() {
+    setSplitPrompt(null)
+  }
+
+  async function confirmSplit() {
+    const at = splitPrompt?.atFrame ?? work
+    setSplitPrompt(null)
+    setBusy(true)
+    try {
+      const next = await api.videoSplit({ index: img.id, at_frame: at })
+      onSession(next)
+    } catch (err) {
+      onError?.(err.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const inPct = (inF / Math.max(1, maxFrame)) * 100
+  const outPct = (outF / Math.max(1, maxFrame)) * 100
+  const workPct = (work / Math.max(1, maxFrame)) * 100
+
+  return (
+    <div className="video-scrubber">
+      <div className="video-scrubber-track-wrap">
+        <div className="video-scrubber-range" style={{ left: `${inPct}%`, width: `${Math.max(0, outPct - inPct)}%` }} />
+        <input
+          type="range"
+          className="video-scrubber-input"
+          min={0}
+          max={maxFrame}
+          value={work}
+          disabled={busy}
+          onChange={(e) => {
+            const wf = Number(e.target.value)
+            setLocalWork(wf)
+            onLocalWork?.(wf)
+          }}
+          onPointerUp={(e) => patchRange({ work_frame: Number(e.currentTarget.value) })}
+          onKeyUp={(e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+              patchRange({ work_frame: Number(e.currentTarget.value) })
+            }
+          }}
+          aria-label="Work frame"
+        />
+        <div className="video-scrubber-playhead" style={{ left: `${workPct}%` }} />
+      </div>
+      <div className="video-scrubber-row">
+        <button type="button" className="secondary" disabled={busy} onClick={() => patchRange({ in_frame: work, work_frame: work })}>
+          Set In
+        </button>
+        <button type="button" className="secondary" disabled={busy} onClick={onSetOut}>
+          Set Out
+        </button>
+        <span className="muted video-scrubber-meta">
+          {work} / {maxFrame} · in {inF}–{outF}
+          {img.fps ? ` · ${Number(img.fps).toFixed(1)} fps` : ''}
+        </span>
+      </div>
+      {splitPrompt && (
+        <div className="video-split-modal" role="dialog" aria-modal="true">
+          <div className="video-split-card">
+            <p>Out set at frame {splitPrompt.atFrame}. Trim only, or split the rest into a new clip?</p>
+            <div className="video-split-actions">
+              <button type="button" onClick={confirmTrim}>Trim</button>
+              <button type="button" onClick={confirmSplit}>Split</button>
+              <button type="button" className="secondary" onClick={() => setSplitPrompt(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -598,6 +726,7 @@ function FocalStage({
   pendingRef.current = pending
   const img = session.images[session.current_idx]
   const focal = img ? focalFromImage(img, pending) : { x: 0, y: 0, cropScale: 1 }
+  const stageSrc = originalStageSrc(img)
 
   function sourceSize() {
     const image = imgRef.current
@@ -845,7 +974,7 @@ function FocalStage({
         <img
           ref={imgRef}
           className="full"
-          src={mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)}
+          src={stageSrc}
           alt=""
           draggable={false}
           onLoad={() => drawLatest.current()}
@@ -872,7 +1001,9 @@ function PreviewStage({
   const prevImg = session.images[session.current_idx - 1]
   const nextImg = session.images[session.current_idx + 1]
   const sourceSrc = img
-    ? mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`)
+    ? (img.media_kind === 'video'
+      ? mediaUrl('frame', img.id, `?frame=${img.work_frame ?? 0}&n=${encodeURIComponent(img.filename)}&wf=${img.work_frame ?? 0}`)
+      : mediaUrl('original', img.id, `?n=${encodeURIComponent(img.filename)}`))
     : ''
   const committed = useMemo(() => ({
     x: img?.focal?.[0] ?? (img?.width || 0) / 2,
@@ -2045,28 +2176,45 @@ export default function Aligner({ session, setSession, batchMode, onFinished }) 
       </div>
 
       {tab === 'original' && (
-        <div
-          className="workspace"
-          ref={workspaceRef}
-          style={{ gridTemplateColumns: `${cols[0]}% 6px ${cols[1]}% 6px ${cols[2]}%` }}
-        >
-          <SidePane img={prev} label="Previous" onOpen={() => goTo(session.current_idx - 1)} />
-          <SplitHandle onBegin={() => { dragOrigin.current = colsRef.current }} onDrag={(dx) => dragSplit('left', dx)} />
-          <FocalStage
-            session={session}
-            pending={pending}
-            setPending={setPending}
-            onConfirm={confirmPt}
-            onDiscard={() => discardCurrent().catch((err) => setError(err.message))}
-            showGrid={showGrid}
-            maskImage={maskImage}
-            showMask={showMask}
-            maskInvert={maskInvert}
-            maskHalfOpacity={maskHalfOpacity}
-            maskFit={maskFit}
-          />
-          <SplitHandle onBegin={() => { dragOrigin.current = colsRef.current }} onDrag={(dx) => dragSplit('right', dx)} />
-          <SidePane img={nextImg} label="Next" onOpen={() => goTo(session.current_idx + 1)} />
+        <div className="original-workspace-wrap">
+          <div
+            className="workspace"
+            ref={workspaceRef}
+            style={{ gridTemplateColumns: `${cols[0]}% 6px ${cols[1]}% 6px ${cols[2]}%` }}
+          >
+            <SidePane img={prev} label="Previous" onOpen={() => goTo(session.current_idx - 1)} />
+            <SplitHandle onBegin={() => { dragOrigin.current = colsRef.current }} onDrag={(dx) => dragSplit('left', dx)} />
+            <FocalStage
+              session={session}
+              pending={pending}
+              setPending={setPending}
+              onConfirm={confirmPt}
+              onDiscard={() => discardCurrent().catch((err) => setError(err.message))}
+              showGrid={showGrid}
+              maskImage={maskImage}
+              showMask={showMask}
+              maskInvert={maskInvert}
+              maskHalfOpacity={maskHalfOpacity}
+              maskFit={maskFit}
+            />
+            <SplitHandle onBegin={() => { dragOrigin.current = colsRef.current }} onDrag={(dx) => dragSplit('right', dx)} />
+            <SidePane img={nextImg} label="Next" onOpen={() => goTo(session.current_idx + 1)} />
+          </div>
+          {img?.media_kind === 'video' && (
+            <VideoScrubber
+              img={img}
+              onSession={(next) => setSession(next)}
+              onLocalWork={(wf) => {
+                setSession((s) => ({
+                  ...s,
+                  images: s.images.map((im) => (
+                    im.id === img.id ? { ...im, work_frame: wf } : im
+                  )),
+                }))
+              }}
+              onError={(msg) => setError(msg)}
+            />
+          )}
         </div>
       )}
 

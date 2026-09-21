@@ -216,7 +216,7 @@ def test_auto_arrange_faces_stubbed(client, tmp_path, monkeypatch):
     # Return fixed centroids without loading YuNet
     xs = {0: 0.9, 1: 0.1, 2: 0.5}
 
-    def fake_sort(paths, progress=None):
+    def fake_sort(paths, progress=None, frame_indices=None):
         order = sorted(range(len(paths)), key=lambda i: xs.get(i, 1e9))
         if progress:
             for i, p in enumerate(paths):

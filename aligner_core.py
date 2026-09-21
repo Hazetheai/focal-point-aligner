@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -34,9 +35,23 @@ UPSCALE_CAP = 2.0       # unused legacy; kept for importers
 THUMB_MAX = 512
 CACHE_DIR_NAME = ".fpa_cache"
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm'}
+MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 DEFAULT_CROP_SCALE = 1.0
 MIN_CROP_SCALE = 0.05   # zoom in vs base framing (~20×)
 MAX_CROP_SCALE = 8.0    # zoom out (clamped by image bounds)
+
+
+def is_video_path(path) -> bool:
+    return Path(path).suffix.lower() in VIDEO_EXTENSIONS
+
+
+def is_image_path(path) -> bool:
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+
+def ffmpeg_available() -> bool:
+    return shutil.which("ffmpeg") is not None
 
 
 def clamp_crop_scale(crop_scale):
@@ -468,6 +483,98 @@ def probe_image_size(img_path):
     return (meta["width"], meta["height"])
 
 
+def probe_video_meta(video_path):
+    """Probe a video with OpenCV: width, height, fps, frame_count, duration_ms."""
+    path = Path(video_path)
+    try:
+        nbytes = path.stat().st_size if path.exists() else 0
+    except OSError:
+        nbytes = 0
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        return None
+    try:
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if width <= 0 or height <= 0:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                return None
+            height, width = frame.shape[:2]
+            frame_count = max(frame_count, 1)
+        if frame_count <= 0:
+            frame_count = 1
+        if not math.isfinite(fps) or fps <= 0:
+            fps = 30.0
+        duration_ms = int(round(1000.0 * frame_count / fps)) if fps > 0 else 0
+        return {
+            "width": int(width),
+            "height": int(height),
+            "bytes": nbytes,
+            "format": (path.suffix.lstrip(".") or "mp4").lower(),
+            "mode": "video",
+            "dpi": None,
+            "orientation": 1,
+            "media_kind": "video",
+            "fps": float(fps),
+            "frame_count": int(frame_count),
+            "duration_ms": int(duration_ms),
+        }
+    finally:
+        cap.release()
+
+
+def probe_media_meta(path):
+    """Probe image or video headers; returns None when undecodable."""
+    path = Path(path)
+    if is_video_path(path):
+        return probe_video_meta(path)
+    if is_image_path(path):
+        meta = probe_image_meta(path)
+        if meta is not None:
+            meta = dict(meta)
+            meta["media_kind"] = "image"
+        return meta
+    return None
+
+
+def extract_video_frame(path, frame_idx) -> Optional[np.ndarray]:
+    """Return a single video frame as BGR uint8, or None on failure."""
+    path = Path(path)
+    frame_idx = max(0, int(frame_idx))
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        return None
+    try:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
+        ok, frame = cap.read()
+        if not ok or frame is None or frame.size == 0:
+            # Some backends fail seek; fall back to sequential read.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            for i in range(frame_idx + 1):
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    return None
+                if i == frame_idx:
+                    break
+        if frame is None or frame.size == 0:
+            return None
+        return _to_uint8_bgr(frame)
+    finally:
+        cap.release()
+
+
+def default_video_range(frame_count: int):
+    """Return (in_frame, out_frame, work_frame) defaults for a clip."""
+    n = max(1, int(frame_count))
+    in_f = 0
+    out_f = n - 1
+    work_f = n // 2
+    return in_f, out_f, work_f
+
+
 class FocalPointAlignerCore:
     """
     Core Focal Point Aligner - all processing logic without UI.
@@ -530,7 +637,7 @@ class FocalPointAlignerCore:
             except:
                 pass
         
-        extensions = IMAGE_EXTENSIONS
+        extensions = MEDIA_EXTENSIONS
         self.image_files = sorted([
             f for f in self.input_folder.iterdir()
             if f.is_file() and f.suffix.lower() in extensions
@@ -539,10 +646,14 @@ class FocalPointAlignerCore:
         self.invalid_images = set()
         self.image_dimensions = {}
         self.image_meta = {}
+        self.video_meta = {}  # idx -> {fps, frame_count, duration_ms, ...}
+        self.in_frames = {}
+        self.out_frames = {}
+        self.work_frames = {}
         self._validate_and_discard_images()
         
         if not self.image_files:
-            raise ValueError(f"No images found in {self.input_folder}")
+            raise ValueError(f"No media files found in {self.input_folder}")
         
         self.current_idx = 0
         self.focal_points = {}
@@ -563,6 +674,7 @@ class FocalPointAlignerCore:
         self._arrange_draft = None  # pending manual order while on Arrange tab
         
         self.load_focal_points()
+        self._ensure_video_ranges()
 
         if "original" not in self.arrangements:
             self.arrangements["original"] = [f.name for f in self.image_files]
@@ -577,6 +689,245 @@ class FocalPointAlignerCore:
         else:
             self.ref_h, self.ref_w = 1440, 2560
     
+    def is_video(self, idx) -> bool:
+        if not (0 <= idx < len(self.image_files)):
+            return False
+        return is_video_path(self.image_files[idx])
+
+    def media_kind(self, idx) -> str:
+        return "video" if self.is_video(idx) else "image"
+
+    def _ensure_video_ranges(self):
+        """Fill/clamp in/out/work frames for every video; re-probe if needed."""
+        for idx, img_file in enumerate(self.image_files):
+            if not is_video_path(img_file):
+                continue
+            meta = self.image_meta.get(img_file.name)
+            if not meta or not meta.get("frame_count"):
+                meta = probe_video_meta(img_file)
+                if meta:
+                    self.image_meta[img_file.name] = meta
+                    self.image_dimensions[idx] = (meta["width"], meta["height"])
+            if not meta:
+                continue
+            self.video_meta[idx] = {
+                "fps": float(meta.get("fps") or 30.0),
+                "frame_count": int(meta.get("frame_count") or 1),
+                "duration_ms": int(meta.get("duration_ms") or 0),
+            }
+            n = max(1, int(self.video_meta[idx]["frame_count"]))
+            din, dout, dwork = default_video_range(n)
+            if idx not in self.in_frames:
+                self.in_frames[idx] = din
+            if idx not in self.out_frames:
+                self.out_frames[idx] = dout
+            if idx not in self.work_frames:
+                self.work_frames[idx] = dwork
+            self.in_frames[idx] = max(0, min(int(self.in_frames[idx]), n - 1))
+            self.out_frames[idx] = max(self.in_frames[idx], min(int(self.out_frames[idx]), n - 1))
+            self.work_frames[idx] = max(
+                self.in_frames[idx],
+                min(int(self.work_frames[idx]), self.out_frames[idx]),
+            )
+
+    def work_frame_for(self, idx) -> int:
+        if idx in self.work_frames:
+            return int(self.work_frames[idx])
+        if idx in self.in_frames:
+            return int(self.in_frames[idx])
+        return 0
+
+    def load_media_bgr(self, idx, frame_idx=None):
+        """Load image pixels or a video frame as BGR uint8."""
+        if not (0 <= idx < len(self.image_files)):
+            return None
+        path = self.image_files[idx]
+        if is_video_path(path):
+            if frame_idx is None:
+                frame_idx = self.work_frame_for(idx)
+            return extract_video_frame(path, frame_idx)
+        img, _ = load_image_safely(path)
+        return img
+
+    def frame_cache_path(self, img_file, frame_idx) -> Path:
+        frames_dir = self.cache_root / "frames"
+        return frames_dir / f"{Path(img_file).stem}_{int(frame_idx)}.jpg"
+
+    def ensure_frame_jpeg(self, idx, frame_idx=None):
+        """Return a cached JPEG path for a video frame (or image itself)."""
+        if not (0 <= idx < len(self.image_files)):
+            return None
+        img_file = self.image_files[idx]
+        if not is_video_path(img_file):
+            return img_file
+        if frame_idx is None:
+            frame_idx = self.work_frame_for(idx)
+        frame_idx = int(frame_idx)
+        path = self.frame_cache_path(img_file, frame_idx)
+        if path.exists():
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        frame = extract_video_frame(img_file, frame_idx)
+        if frame is None:
+            return None
+        cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+        return path
+
+    def set_video_range(self, idx, in_frame=None, out_frame=None, work_frame=None):
+        """Update in/out/work frames for a video index. Returns True on success."""
+        if not self.is_video(idx):
+            return False
+        self._ensure_video_ranges()
+        n = int(self.video_meta.get(idx, {}).get("frame_count") or 1)
+        n = max(1, n)
+        cur_in = int(self.in_frames.get(idx, 0))
+        cur_out = int(self.out_frames.get(idx, n - 1))
+        cur_work = int(self.work_frames.get(idx, cur_in))
+        if in_frame is not None:
+            cur_in = max(0, min(int(in_frame), n - 1))
+        if out_frame is not None:
+            cur_out = max(0, min(int(out_frame), n - 1))
+        if cur_out < cur_in:
+            cur_out = cur_in
+        if work_frame is not None:
+            cur_work = int(work_frame)
+        cur_work = max(cur_in, min(cur_work, cur_out))
+        prev_work = self.work_frames.get(idx)
+        self.in_frames[idx] = cur_in
+        self.out_frames[idx] = cur_out
+        self.work_frames[idx] = cur_work
+        if prev_work != cur_work:
+            # Work-frame change invalidates thumb / preview for this clip.
+            thumb = self.thumb_path(self.image_files[idx])
+            if thumb.exists():
+                try:
+                    thumb.unlink()
+                except OSError:
+                    pass
+            self.preview_dirty.add(idx)
+        self.save_focal_points()
+        return True
+
+    def _unique_part_path(self, src: Path) -> Path:
+        stem, suffix = src.stem, src.suffix
+        candidate = self.input_folder / f"{stem}__part2{suffix}"
+        n = 3
+        while candidate.exists():
+            candidate = self.input_folder / f"{stem}__part{n}{suffix}"
+            n += 1
+        return candidate
+
+    def split_video_at(self, idx, at_frame):
+        """Split video at at_frame: part A keeps file with out=at_frame; part B is new file.
+
+        Returns (ok, error_message|None).
+        """
+        if not self.is_video(idx):
+            return False, "Not a video"
+        if not ffmpeg_available():
+            return False, "ffmpeg not found on PATH — install ffmpeg to split videos"
+        src = self.image_files[idx]
+        meta = self.video_meta.get(idx) or {}
+        n = max(1, int(meta.get("frame_count") or 1))
+        fps = float(meta.get("fps") or 30.0)
+        at_frame = max(0, min(int(at_frame), n - 1))
+        if at_frame >= n - 1:
+            return False, "Nothing to split after the last frame"
+
+        dest = self._unique_part_path(src)
+        start_frame = at_frame + 1
+        start_sec = start_frame / fps if fps > 0 else 0.0
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{start_sec:.6f}",
+            "-i", str(src),
+            "-c", "copy",
+            str(dest),
+        ]
+        try:
+            subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or b"").decode("utf-8", errors="replace").strip()
+            return False, err or f"ffmpeg split failed for {src.name}"
+        except OSError as e:
+            return False, str(e)
+
+        if not dest.is_file() or dest.stat().st_size <= 0:
+            return False, "Split produced an empty file"
+
+        # Part A: clamp out/work to at_frame
+        self.set_video_range(idx, out_frame=at_frame, work_frame=min(self.work_frame_for(idx), at_frame))
+
+        insert_at = idx + 1
+        src_idx = idx
+
+        def _insert_dict(d, default=None, copy=True):
+            out = {}
+            for i, val in d.items():
+                if i < insert_at:
+                    out[i] = val
+                else:
+                    out[i + 1] = val
+            if copy and src_idx in d:
+                out[insert_at] = d[src_idx]
+            elif default is not None:
+                out[insert_at] = default
+            return out
+
+        def _insert_set(s, copy=True):
+            out = set()
+            for i in s:
+                if i < insert_at:
+                    out.add(i)
+                else:
+                    out.add(i + 1)
+            if copy and src_idx in s:
+                out.add(insert_at)
+            return out
+
+        self.image_files.insert(insert_at, dest)
+        self.focal_points = _insert_dict(self.focal_points)
+        self.auto_center_flags = _insert_dict(self.auto_center_flags)
+        self.crop_scales = _insert_dict(self.crop_scales)
+        self.flip_h = _insert_dict(self.flip_h)
+        self.flip_v = _insert_dict(self.flip_v)
+        self.image_dimensions = _insert_dict(self.image_dimensions)
+        self.in_frames = _insert_dict(self.in_frames, copy=False)
+        self.out_frames = _insert_dict(self.out_frames, copy=False)
+        self.work_frames = _insert_dict(self.work_frames, copy=False)
+        self.video_meta = _insert_dict(self.video_meta, copy=False)
+        self.completed = _insert_set(self.completed)
+        self.preview_dirty = _insert_set(self.preview_dirty)
+        self.preview_dirty.add(insert_at)
+
+        part_meta = probe_video_meta(dest)
+        if part_meta:
+            self.image_meta[dest.name] = part_meta
+            self.image_dimensions[insert_at] = (part_meta["width"], part_meta["height"])
+            self.video_meta[insert_at] = {
+                "fps": float(part_meta.get("fps") or 30.0),
+                "frame_count": int(part_meta.get("frame_count") or 1),
+                "duration_ms": int(part_meta.get("duration_ms") or 0),
+            }
+            din, dout, dwork = default_video_range(part_meta["frame_count"])
+            self.in_frames[insert_at] = din
+            self.out_frames[insert_at] = dout
+            self.work_frames[insert_at] = dwork
+
+        for slot, names in list(self.arrangements.items()):
+            if not isinstance(names, list):
+                continue
+            try:
+                pos = names.index(src.name)
+            except ValueError:
+                continue
+            names = list(names)
+            names.insert(pos + 1, dest.name)
+            self.arrangements[slot] = names
+
+        self.save_focal_points()
+        return True, None
+
     @property
     def preview_folder(self):
         if self.alignment_mode == "landscape":
@@ -638,9 +989,15 @@ class FocalPointAlignerCore:
                         continue
                     for idx, img_file in enumerate(self.image_files):
                         if img_file.name == filename:
+                            has_focal = False
                             if isinstance(coords, dict):
-                                self.focal_points[idx] = (coords.get("focal_x", 0), coords.get("focal_y", 0))
-                                self.image_dimensions[idx] = (coords.get("original_width", 0), coords.get("original_height", 0))
+                                if "focal_x" in coords and "focal_y" in coords:
+                                    self.focal_points[idx] = (coords.get("focal_x", 0), coords.get("focal_y", 0))
+                                    has_focal = True
+                                ow = coords.get("original_width", 0)
+                                oh = coords.get("original_height", 0)
+                                if ow and oh:
+                                    self.image_dimensions[idx] = (ow, oh)
                                 self.auto_center_flags[idx] = coords.get("auto_center", False)
                                 if "crop_scale" in coords:
                                     self.crop_scales[idx] = clamp_crop_scale(coords.get("crop_scale"))
@@ -648,14 +1005,23 @@ class FocalPointAlignerCore:
                                     self.flip_h[idx] = True
                                 if coords.get("flip_v"):
                                     self.flip_v[idx] = True
+                                if "in_frame" in coords:
+                                    self.in_frames[idx] = int(coords["in_frame"])
+                                if "out_frame" in coords:
+                                    self.out_frames[idx] = int(coords["out_frame"])
+                                if "work_frame" in coords:
+                                    self.work_frames[idx] = int(coords["work_frame"])
                             elif isinstance(coords, list) and len(coords) >= 4:
                                 self.focal_points[idx] = (coords[0], coords[1])
                                 self.image_dimensions[idx] = (coords[2], coords[3])
                                 self.auto_center_flags[idx] = False
+                                has_focal = True
                             elif isinstance(coords, list) and len(coords) >= 2:
                                 self.focal_points[idx] = (coords[0], coords[1])
                                 self.auto_center_flags[idx] = False
-                            self.completed.add(idx)
+                                has_focal = True
+                            if has_focal:
+                                self.completed.add(idx)
                             break
                 
                 if "order" in data and isinstance(data["order"], list):
@@ -708,6 +1074,10 @@ class FocalPointAlignerCore:
         new_crop_scales = {}
         new_flip_h = {}
         new_flip_v = {}
+        new_in = {}
+        new_out = {}
+        new_work = {}
+        new_vmeta = {}
         for new_idx, img_file in enumerate(ordered):
             old_idx = old_name_to_idx[img_file.name]
             if old_idx in self.focal_points:
@@ -724,6 +1094,14 @@ class FocalPointAlignerCore:
                 new_flip_h[new_idx] = True
             if self.flip_v.get(old_idx):
                 new_flip_v[new_idx] = True
+            if old_idx in self.in_frames:
+                new_in[new_idx] = self.in_frames[old_idx]
+            if old_idx in self.out_frames:
+                new_out[new_idx] = self.out_frames[old_idx]
+            if old_idx in self.work_frames:
+                new_work[new_idx] = self.work_frames[old_idx]
+            if old_idx in self.video_meta:
+                new_vmeta[new_idx] = self.video_meta[old_idx]
         
         self.image_files = ordered
         self.focal_points = new_focal
@@ -733,10 +1111,14 @@ class FocalPointAlignerCore:
         self.crop_scales = new_crop_scales
         self.flip_h = new_flip_h
         self.flip_v = new_flip_v
+        self.in_frames = new_in
+        self.out_frames = new_out
+        self.work_frames = new_work
+        self.video_meta = new_vmeta
         logger.info(f"[ALIGNER _reorder_files_by_names] Reordered to {[f.name[:20] for f in ordered[:5]]}...")
     
     def _validate_and_discard_images(self):
-        """Validate images via header probe; move undecodable files aside.
+        """Validate media via header/video probe; move undecodable files aside.
 
         Stores original (width, height) in image_dimensions without a full decode.
         """
@@ -746,20 +1128,26 @@ class FocalPointAlignerCore:
         invalid_indices = []
         
         for idx, img_file in enumerate(self.image_files):
-            meta = probe_image_meta(img_file)
+            meta = probe_media_meta(img_file)
             if meta is None:
-                logger.warning(f"[VALIDATE] Invalid image (cannot probe): {img_file.name}")
+                logger.warning(f"[VALIDATE] Invalid media (cannot probe): {img_file.name}")
                 invalid_indices.append(idx)
                 self.invalid_images.add(img_file.name)
                 continue
             self.image_dimensions[idx] = (meta["width"], meta["height"])
             self.image_meta[img_file.name] = meta
+            if meta.get("media_kind") == "video":
+                self.video_meta[idx] = {
+                    "fps": float(meta.get("fps") or 30.0),
+                    "frame_count": int(meta.get("frame_count") or 1),
+                    "duration_ms": int(meta.get("duration_ms") or 0),
+                }
         
         if not invalid_indices:
-            logger.info(f"[VALIDATE] All {len(self.image_files)} images are valid")
+            logger.info(f"[VALIDATE] All {len(self.image_files)} media files are valid")
             return
         
-        logger.info(f"[VALIDATE] Found {len(invalid_indices)} invalid images, moving to discarded/invalid/")
+        logger.info(f"[VALIDATE] Found {len(invalid_indices)} invalid files, moving to discarded/invalid/")
         
         invalid_folder = self.input_folder / "discarded" / "invalid"
         invalid_folder.mkdir(parents=True, exist_ok=True)
@@ -769,10 +1157,11 @@ class FocalPointAlignerCore:
             dest = invalid_folder / img_file.name
             if img_file.exists():
                 shutil.move(str(img_file), str(dest))
-                logger.info(f"[VALIDATE] Moved invalid image to: {dest}")
+                logger.info(f"[VALIDATE] Moved invalid media to: {dest}")
         
         valid = []
         new_dims = {}
+        new_vmeta = {}
         new_i = 0
         for i, f in enumerate(self.image_files):
             if i in invalid_indices:
@@ -780,11 +1169,14 @@ class FocalPointAlignerCore:
             valid.append(f)
             if i in self.image_dimensions:
                 new_dims[new_i] = self.image_dimensions[i]
+            if i in self.video_meta:
+                new_vmeta[new_i] = self.video_meta[i]
             new_i += 1
         self.image_files = valid
         self.image_dimensions = new_dims
+        self.video_meta = new_vmeta
         
-        logger.info(f"[VALIDATE] After validation: {len(self.image_files)} valid images remain")
+        logger.info(f"[VALIDATE] After validation: {len(self.image_files)} valid media remain")
     
     def save_focal_points(self):
         stale_indices = [idx for idx in self.focal_points.keys() if idx >= len(self.image_files)]
@@ -808,23 +1200,40 @@ class FocalPointAlignerCore:
         
         data["order"] = [self.image_files[i].name for i in range(len(self.image_files))]
         
-        for idx, focal in self.focal_points.items():
-            if idx < len(self.image_files):
-                filename = self.image_files[idx].name
-                dims = self.image_dimensions.get(idx, (0, 0))
-                auto_center = self.auto_center_flags.get(idx, False)
-                entry = {
+        for idx, img_file in enumerate(self.image_files):
+            filename = img_file.name
+            is_vid = is_video_path(img_file)
+            focal = self.focal_points.get(idx)
+            if focal is None and not is_vid:
+                continue
+            dims = self.image_dimensions.get(idx, (0, 0))
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+            }
+            if focal is not None:
+                entry.update({
                     "focal_x": focal[0],
                     "focal_y": focal[1],
                     "original_width": dims[0],
                     "original_height": dims[1],
-                    "auto_center": auto_center,
+                    "auto_center": self.auto_center_flags.get(idx, False),
                     "crop_scale": clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE)),
                     "flip_h": bool(self.flip_h.get(idx, False)),
                     "flip_v": bool(self.flip_v.get(idx, False)),
-                    "timestamp": datetime.now().isoformat()
-                }
-                data[filename] = entry
+                })
+            elif dims[0] and dims[1]:
+                entry["original_width"] = dims[0]
+                entry["original_height"] = dims[1]
+            if is_vid:
+                n = int(self.video_meta.get(idx, {}).get("frame_count") or 1)
+                din, dout, dwork = default_video_range(n)
+                entry["media_kind"] = "video"
+                entry["in_frame"] = int(self.in_frames.get(idx, din))
+                entry["out_frame"] = int(self.out_frames.get(idx, dout))
+                entry["work_frame"] = int(self.work_frames.get(idx, dwork))
+                entry["fps"] = float(self.video_meta.get(idx, {}).get("fps") or 30.0)
+                entry["frame_count"] = n
+            data[filename] = entry
         
         if self.alignment_mode:
             data["alignment_mode"] = self.alignment_mode
@@ -845,8 +1254,10 @@ class FocalPointAlignerCore:
             }
         
         try:
-            with open(self.json_path, 'w') as f:
+            tmp_path = self.json_path.with_suffix(".json.tmp")
+            with open(tmp_path, 'w') as f:
                 json.dump(data, f, indent=2)
+            tmp_path.replace(self.json_path)
         except Exception as e:
             logger.warning(f"Warning: Could not save focal points: {e}")
     
@@ -949,6 +1360,10 @@ class FocalPointAlignerCore:
         """Run an AutoArrange mode and save into a slot. Returns (ok, slot|error)."""
         options = options or {}
         paths = list(self.image_files)
+        frame_indices = [
+            self.work_frame_for(i) if self.is_video(i) else None
+            for i in range(len(paths))
+        ]
         from arrange_auto import (
             sort_indices_by_color,
             sort_indices_by_depth,
@@ -957,12 +1372,15 @@ class FocalPointAlignerCore:
         )
         labels = None
         if mode == "color":
-            order, labels = sort_indices_by_color(paths, progress=progress_callback)
+            order, labels = sort_indices_by_color(
+                paths, progress=progress_callback, frame_indices=frame_indices,
+            )
         elif mode == "depth":
             order = sort_indices_by_depth(
                 paths,
                 near_to_far=bool(options.get("near_to_far", True)),
                 progress=progress_callback,
+                frame_indices=frame_indices,
             )
         elif mode == "lead":
             order = lead_match_sort(
@@ -971,9 +1389,12 @@ class FocalPointAlignerCore:
                 roi=options.get("roi"),
                 axis=str(options.get("axis", "x")),
                 progress=progress_callback,
+                frame_indices=frame_indices,
             )
         elif mode == "faces":
-            order = sort_indices_by_faces(paths, progress=progress_callback)
+            order = sort_indices_by_faces(
+                paths, progress=progress_callback, frame_indices=frame_indices,
+            )
         else:
             return False, f"Unknown mode: {mode}"
         if not self.apply_arrange_order(order, mark_draft=False):
@@ -1053,6 +1474,10 @@ class FocalPointAlignerCore:
         self.flip_h = _insert_dict(self.flip_h)
         self.flip_v = _insert_dict(self.flip_v)
         self.image_dimensions = _insert_dict(self.image_dimensions)
+        self.in_frames = _insert_dict(self.in_frames)
+        self.out_frames = _insert_dict(self.out_frames)
+        self.work_frames = _insert_dict(self.work_frames)
+        self.video_meta = _insert_dict(self.video_meta)
         self.completed = _insert_set(self.completed)
         self.preview_dirty = _insert_set(self.preview_dirty)
         self.preview_dirty.add(insert_at)
@@ -1061,10 +1486,16 @@ class FocalPointAlignerCore:
         if src.name in self.image_meta:
             self.image_meta[dest.name] = dict(self.image_meta[src.name])
         else:
-            meta = probe_image_meta(dest)
+            meta = probe_media_meta(dest)
             if meta:
                 self.image_meta[dest.name] = meta
                 self.image_dimensions[insert_at] = (meta["width"], meta["height"])
+                if meta.get("media_kind") == "video":
+                    self.video_meta[insert_at] = {
+                        "fps": float(meta.get("fps") or 30.0),
+                        "frame_count": int(meta.get("frame_count") or 1),
+                        "duration_ms": int(meta.get("duration_ms") or 0),
+                    }
 
         # Insert into arrangement filename lists after the source name
         for slot, names in list(self.arrangements.items()):
@@ -1088,16 +1519,33 @@ class FocalPointAlignerCore:
         if dims and dims[0] > 0 and dims[1] > 0:
             return dims
         if 0 <= idx < len(self.image_files):
-            meta = probe_image_meta(self.image_files[idx])
+            meta = probe_media_meta(self.image_files[idx])
             if meta:
                 size = (meta["width"], meta["height"])
                 self.image_dimensions[idx] = size
                 self.image_meta[self.image_files[idx].name] = meta
+                if meta.get("media_kind") == "video":
+                    self.video_meta[idx] = {
+                        "fps": float(meta.get("fps") or 30.0),
+                        "frame_count": int(meta.get("frame_count") or 1),
+                        "duration_ms": int(meta.get("duration_ms") or 0),
+                    }
                 return size
         return None
 
     def thumb_path(self, img_file):
-        return self.thumb_folder / f"{Path(img_file).stem}.jpg"
+        stem = Path(img_file).stem
+        if is_video_path(img_file):
+            # Include work frame in the name so scrubbing regenerates thumbs.
+            idx = None
+            name = Path(img_file).name
+            for i, f in enumerate(self.image_files):
+                if f.name == name:
+                    idx = i
+                    break
+            wf = self.work_frame_for(idx) if idx is not None else 0
+            return self.thumb_folder / f"{stem}_v{wf}.jpg"
+        return self.thumb_folder / f"{stem}.jpg"
 
     def preview_path(self, img_file, orientation="landscape"):
         # `_u8` suffix invalidates previews written before uint8 normalization.
@@ -1120,6 +1568,16 @@ class FocalPointAlignerCore:
         if path.exists():
             return path
         path.parent.mkdir(parents=True, exist_ok=True)
+        if is_video_path(img_file):
+            img = self.load_media_bgr(idx)
+            if img is None:
+                return None
+            h, w = img.shape[:2]
+            scale = min(THUMB_MAX / max(w, 1), THUMB_MAX / max(h, 1), 1.0)
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            small = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+            cv2.imwrite(str(path), small, [cv2.IMWRITE_JPEG_QUALITY, 75])
+            return path
         if PIL_AVAILABLE:
             try:
                 with Image.open(str(img_file)) as im:
@@ -1158,11 +1616,18 @@ class FocalPointAlignerCore:
             focal = self.focal_points.get(i)
             meta = self.image_meta.get(f.name)
             if not meta:
-                meta = probe_image_meta(f) or {}
+                meta = probe_media_meta(f) or {}
                 if meta:
                     self.image_meta[f.name] = meta
                     w, h = meta.get("width") or w, meta.get("height") or h
-            images.append({
+                    if meta.get("media_kind") == "video":
+                        self.video_meta[i] = {
+                            "fps": float(meta.get("fps") or 30.0),
+                            "frame_count": int(meta.get("frame_count") or 1),
+                            "duration_ms": int(meta.get("duration_ms") or 0),
+                        }
+            kind = "video" if is_video_path(f) else "image"
+            entry = {
                 "id": i,
                 "filename": f.name,
                 "path": str(f.resolve()),
@@ -1181,7 +1646,21 @@ class FocalPointAlignerCore:
                 "crop_scale": clamp_crop_scale(self.crop_scales.get(i, DEFAULT_CROP_SCALE)) if focal else DEFAULT_CROP_SCALE,
                 "flip_h": bool(self.flip_h.get(i, False)),
                 "flip_v": bool(self.flip_v.get(i, False)),
-            })
+                "media_kind": kind,
+            }
+            if kind == "video":
+                vmeta = self.video_meta.get(i) or {}
+                n = int(vmeta.get("frame_count") or meta.get("frame_count") or 1)
+                din, dout, dwork = default_video_range(n)
+                entry.update({
+                    "fps": float(vmeta.get("fps") or meta.get("fps") or 30.0),
+                    "frame_count": n,
+                    "duration_ms": int(vmeta.get("duration_ms") or meta.get("duration_ms") or 0),
+                    "in_frame": int(self.in_frames.get(i, din)),
+                    "out_frame": int(self.out_frames.get(i, dout)),
+                    "work_frame": int(self.work_frames.get(i, dwork)),
+                })
+            images.append(entry)
         return {
             "images": images,
             "current_idx": self.current_idx,
@@ -1202,6 +1681,7 @@ class FocalPointAlignerCore:
                 (self.arrangement_reversed or {}).get(self.arrangement_active or "original", False)
             ),
             "arrangement_slots": ["original"] + [str(i) for i in range(1, 10)],
+            "ffmpeg_available": ffmpeg_available(),
         }
 
     def crop_for(self, idx, orientation=None):
@@ -1225,7 +1705,7 @@ class FocalPointAlignerCore:
                 "crop_scale": clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE))}
 
     def export_aligned(self, output_folder, orientation="landscape", progress_callback=None):
-        """Write aligned JPEGs to output_folder as {idx:04d}.jpg. GUI export path."""
+        """Write aligned media to output_folder: images as {idx:04d}.jpg, videos as .mp4."""
         output_folder = Path(output_folder)
         output_folder.mkdir(parents=True, exist_ok=True)
         self.set_alignment_mode(orientation)
@@ -1234,20 +1714,47 @@ class FocalPointAlignerCore:
         for i, img_file in enumerate(self.image_files):
             focal = self.focal_points.get(i)
             if focal is not None:
-                ok = self.align_single_image(
-                    i, img_file, focal, output_folder, orientation,
-                    output_name=f"{i:04d}.jpg",
-                )
-                if ok:
-                    exported += 1
+                if self.is_video(i):
+                    ok, err = self.align_single_video(
+                        i, img_file, focal, output_folder, orientation,
+                        output_name=f"{i:04d}.mp4",
+                        progress_callback=progress_callback,
+                        file_index=i,
+                        file_total=total,
+                    )
+                    if ok:
+                        exported += 1
+                    elif progress_callback and err:
+                        self._emit_export_progress(
+                            progress_callback, i + 1, total, img_file.name, error=err,
+                        )
+                else:
+                    ok = self.align_single_image(
+                        i, img_file, focal, output_folder, orientation,
+                        output_name=f"{i:04d}.jpg",
+                    )
+                    if ok:
+                        exported += 1
             if progress_callback:
-                progress_callback(i + 1, total, img_file.name)
+                self._emit_export_progress(progress_callback, i + 1, total, img_file.name)
         return exported
+
+    @staticmethod
+    def _emit_export_progress(callback, done, total, name, error=None):
+        if not callback:
+            return
+        try:
+            callback(done, total, name, error=error)
+        except TypeError:
+            if error:
+                callback(done, total, f"ERROR: {name}: {error}")
+            else:
+                callback(done, total, name)
     
     def get_current_image(self):
-        """Load and return the current original image."""
+        """Load and return the current original image / work frame."""
         if 0 <= self.current_idx < len(self.image_files):
-            img = cv2.imread(str(self.image_files[self.current_idx]))
+            img = self.load_media_bgr(self.current_idx)
             if img is not None:
                 h, w = img.shape[:2]
                 self.image_dimensions[self.current_idx] = (w, h)
@@ -1547,9 +2054,10 @@ class FocalPointAlignerCore:
         cv2.imwrite(str(output_path), aligned, [cv2.IMWRITE_JPEG_QUALITY, 95])
     
     def align_single_image(self, idx, img_file, focal, output_folder, orientation, output_name=None):
-        """Align a single image with given focal point to specified orientation.
+        """Align a single image (or video work-frame) with given focal point.
         
-        Returns True if successful, False otherwise.
+        Returns True if successful, False otherwise. For videos this writes a
+        preview JPEG of the work frame; use align_single_video for MP4 export.
         """
         # Use swapped dimensions for portrait orientation
         if orientation == "portrait":
@@ -1563,7 +2071,11 @@ class FocalPointAlignerCore:
             output_name = f"{idx:04d}.jpg"
         
         try:
-            img, load_method = load_image_safely(img_file)
+            if is_video_path(img_file):
+                img = self.load_media_bgr(idx)
+                load_method = "video"
+            else:
+                img, load_method = load_image_safely(img_file)
             if img is None:
                 logger.warning(f"[align_single_image] Failed to load {img_file.name}, creating placeholder")
                 output_folder.mkdir(parents=True, exist_ok=True)
@@ -1596,6 +2108,127 @@ class FocalPointAlignerCore:
             return True
         except Exception:
             return False
+
+    def align_single_video(self, idx, img_file, focal, output_folder, orientation,
+                           output_name=None, progress_callback=None,
+                           file_index=0, file_total=1):
+        """Export an aligned MP4 for frames in_frame..out_frame inclusive.
+
+        Returns (ok, error_message|None).
+        """
+        if orientation == "portrait":
+            target_w = self.target_height
+            target_h = self.target_width
+        else:
+            target_w = self.target_width
+            target_h = self.target_height
+
+        if output_name is None:
+            output_name = f"{idx:04d}.mp4"
+        output_folder = Path(output_folder)
+        output_folder.mkdir(parents=True, exist_ok=True)
+        output_path = output_folder / output_name
+
+        if not ffmpeg_available():
+            msg = (
+                f"ffmpeg not found on PATH — cannot export {img_file.name}. "
+                "Install ffmpeg (e.g. brew install ffmpeg) and retry."
+            )
+            logger.warning(msg)
+            return False, msg
+
+        self._ensure_video_ranges()
+        vmeta = self.video_meta.get(idx) or {}
+        fps = float(vmeta.get("fps") or 30.0)
+        n = max(1, int(vmeta.get("frame_count") or 1))
+        in_f = int(self.in_frames.get(idx, 0))
+        out_f = int(self.out_frames.get(idx, n - 1))
+        in_f = max(0, min(in_f, n - 1))
+        out_f = max(in_f, min(out_f, n - 1))
+        frame_total = out_f - in_f + 1
+
+        fh = bool(self.flip_h.get(idx, False))
+        fv = bool(self.flip_v.get(idx, False))
+        crop_scale = self.crop_scales.get(idx, DEFAULT_CROP_SCALE)
+
+        # Even dimensions required for yuv420p
+        enc_w = target_w if target_w % 2 == 0 else target_w + 1
+        enc_h = target_h if target_h % 2 == 0 else target_h + 1
+
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", f"{enc_w}x{enc_h}",
+            "-r", f"{fps:.6f}",
+            "-i", "pipe:0",
+            "-an",
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-preset", "veryfast",
+            "-crf", "18",
+            str(output_path),
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as e:
+            return False, str(e)
+
+        try:
+            for fi, frame_idx in enumerate(range(in_f, out_f + 1)):
+                frame = extract_video_frame(img_file, frame_idx)
+                if frame is None:
+                    frame = np.full((target_h, target_w, 3), 0, dtype=np.uint8)
+                h0, w0 = frame.shape[:2]
+                use_focal = focal if focal is not None else (w0 / 2, h0 / 2)
+                fx, fy = transform_focal_for_flips(use_focal[0], use_focal[1], w0, h0, fh, fv)
+                flipped = apply_user_flips(frame, fh, fv)
+                aligned, _ = render_aligned(
+                    flipped, (fx, fy), target_w, target_h,
+                    max_zoom=self.max_zoom,
+                    crop_scale=crop_scale,
+                )
+                if enc_w != target_w or enc_h != target_h:
+                    canvas = np.zeros((enc_h, enc_w, 3), dtype=np.uint8)
+                    canvas[:target_h, :target_w] = aligned
+                    aligned = canvas
+                try:
+                    proc.stdin.write(aligned.tobytes())
+                except BrokenPipeError:
+                    err = (proc.stderr.read() if proc.stderr else b"").decode("utf-8", errors="replace")
+                    return False, err or "ffmpeg pipe broken"
+                if progress_callback:
+                    FocalPointAlignerCore._emit_export_progress(
+                        progress_callback,
+                        file_index, file_total,
+                        f"{img_file.name} [{fi + 1}/{frame_total}]",
+                    )
+            proc.stdin.close()
+            stderr = proc.stderr.read() if proc.stderr else b""
+            rc = proc.wait(timeout=600)
+            if rc != 0:
+                err = stderr.decode("utf-8", errors="replace").strip()
+                return False, err or f"ffmpeg exited {rc}"
+            if not output_path.is_file() or output_path.stat().st_size <= 0:
+                return False, "ffmpeg produced an empty file"
+            return True, None
+        except Exception as e:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False, str(e)
+        finally:
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+            except Exception:
+                pass
     
     def _align_single_image_threaded(self, idx, img_file, focal, output_folder, orientation, timeout=30):
         """Wrapper to run align_single_image with timeout in a background thread."""
@@ -1908,6 +2541,10 @@ class FocalPointAlignerCore:
         self.crop_scales = _shift_dict(self.crop_scales)
         self.flip_h = _shift_dict(self.flip_h)
         self.flip_v = _shift_dict(self.flip_v)
+        self.in_frames = _shift_dict(self.in_frames)
+        self.out_frames = _shift_dict(self.out_frames)
+        self.work_frames = _shift_dict(self.work_frames)
+        self.video_meta = _shift_dict(self.video_meta)
         self.completed = _shift_set(self.completed)
         self.preview_dirty = _shift_set(self.preview_dirty)
         
@@ -1935,6 +2572,10 @@ class FocalPointAlignerCore:
         new_crop_scales = {}
         new_flip_h = {}
         new_flip_v = {}
+        new_in = {}
+        new_out = {}
+        new_work = {}
+        new_vmeta = {}
         
         for new_pos, orig_idx in enumerate(display_order):
             if orig_idx in self.focal_points:
@@ -1951,6 +2592,14 @@ class FocalPointAlignerCore:
                 new_flip_h[new_pos] = True
             if self.flip_v.get(orig_idx):
                 new_flip_v[new_pos] = True
+            if orig_idx in self.in_frames:
+                new_in[new_pos] = self.in_frames[orig_idx]
+            if orig_idx in self.out_frames:
+                new_out[new_pos] = self.out_frames[orig_idx]
+            if orig_idx in self.work_frames:
+                new_work[new_pos] = self.work_frames[orig_idx]
+            if orig_idx in self.video_meta:
+                new_vmeta[new_pos] = self.video_meta[orig_idx]
         
         old_order = [i for i in range(len(self.image_files))]
         if display_order != old_order:
@@ -1963,6 +2612,10 @@ class FocalPointAlignerCore:
             self.crop_scales = new_crop_scales
             self.flip_h = new_flip_h
             self.flip_v = new_flip_v
+            self.in_frames = new_in
+            self.out_frames = new_out
+            self.work_frames = new_work
+            self.video_meta = new_vmeta
             self.current_idx = old_to_new.get(self.current_idx, 0)
             self.preview_dirty = {
                 old_to_new[idx] for idx in self.preview_dirty if idx in old_to_new

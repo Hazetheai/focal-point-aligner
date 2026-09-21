@@ -61,6 +61,14 @@ h2 { margin: 0; font-size: 18px; }
 button.secondary[aria-pressed="true"] { background: var(--accent); }
 
 .workspace { flex: 1; min-height: 0; display: grid; grid-template-columns: 16% 6px 1fr 6px 16%; gap: 0; align-items: stretch; }
+.original-workspace-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.original-workspace-wrap .workspace { flex: 1; min-height: 0; }
 .workspace.preview { display: flex; flex-direction: column; grid-template-columns: none; gap: 10px; }
 .workspace.arrange {
   display: flex;
@@ -921,6 +929,73 @@ button.secondary[aria-pressed="true"] { background: var(--accent); }
 
 .error { color: var(--error); }
 .ok { color: var(--success); }
+
+.video-scrubber {
+  flex: 0 0 auto;
+  padding: 8px 12px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin: 0 12px 4px;
+}
+.video-scrubber-track-wrap {
+  position: relative;
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+.video-scrubber-range {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: 99px;
+  pointer-events: none;
+}
+.video-scrubber-input {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.video-scrubber-playhead {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  margin-left: -1px;
+  background: #fff;
+  pointer-events: none;
+  opacity: 0.85;
+}
+.video-scrubber-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.video-scrubber-meta { font-size: 12px; }
+.video-split-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+}
+.video-split-card {
+  width: min(420px, 92vw);
+  background: var(--panel, var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+.video-split-card p { margin: 0 0 14px; }
+.video-split-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .queue { max-height: min(360px, 42vh); overflow: auto; margin: 8px 0 0; }
 .queue li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); }

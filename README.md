@@ -1,6 +1,6 @@
 # Focal Point Aligner
 
-Align a folder of photos around a focal point, then export them to a shared frame size.
+Align a folder of photos (and videos) around a focal point, then export them to a shared frame size.
 
 The GUI is a **React + FastAPI** app. On macOS you can also run an unsigned **Tauri** `.app` shell that embeds the web UI and starts the Python API from this project’s `./venv`.
 
@@ -15,6 +15,8 @@ npm run dev
 Creates `./venv` if needed, installs deps, starts the API on **8765**, Vite on **5173**, and opens the browser. Stop with Ctrl+C.
 
 Equivalent: `./dev.sh`
+
+**Video export / split** also need system **ffmpeg** on your `PATH` (`brew install ffmpeg` on macOS). OpenCV is enough for discovery, scrubbing, and still-frame preview.
 
 ## Desktop app (unsigned Tauri)
 
@@ -36,11 +38,13 @@ There is no PyQt / PyInstaller app path anymore.
 ## How it works
 
 1. **Opener** — Single / Batch / **Import**. Set target size with ratio + resolution presets (or manual W×H) → **Start**.
-2. **Original** — click/drag focal; wheel resizes crop; **Enter** saves+advances; **X** / **Shift+middle-click** discards; **D** duplicates.
+2. **Original** — click/drag focal; wheel resizes crop; **Enter** saves+advances; **X** / **Shift+middle-click** discards; **D** duplicates. Videos show a scrubber (work / in / out); **Set Out** can Trim or Split.
 3. **Preview** — pan/zoom fine-tune; **Enter** commits; **C** compares; live zoom indicator.
 4. **Arrange** — drag thumbs; AutoArrange (Color / Depth / Lead / Faces); **Reverse**; slots **0–9**.
-5. **E** / Export writes numbered JPEGs; focals stay in `<input>/focal_points.json`.
+5. **E** / Export writes `{idx:04d}.jpg` for images and `{idx:04d}.mp4` for videos; focals stay in `<input>/focal_points.json`.
 6. **Esc** returns to the opener (batch → next folder).
+
+Supported stills: `.jpg` `.jpeg` `.png` `.bmp` `.webp` `.tiff`. Videos: `.mp4` `.mov` `.m4v` `.webm`.
 
 ## Keyboard
 
@@ -60,7 +64,7 @@ Hotkeys are tab-scoped.
 
 ## Batch, import, merge
 
-- **Batch** walks subfolders; done when `<sub>_aligned` already has images.
+- **Batch** walks subfolders; done when `<sub>_aligned` already has images or videos.
 - **Import** downloads URL lists, then continues as Batch.
 - **Merge** / **Move aligned** as before.
 

@@ -10,44 +10,55 @@ import shutil
 from pathlib import Path
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm'}
+MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
-def _contains_images(path: Path) -> bool:
+def _contains_media(path: Path) -> bool:
+    """True when the folder holds at least one image or video file."""
     if not path.is_dir():
         return False
     try:
         return any(
-            f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+            f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
             for f in path.iterdir()
         )
     except OSError:
         return False
 
 
+# Back-compat alias used by older tests / callers.
+_contains_images = _contains_media
+
+
 def _aligned_output_for(folder: Path) -> Path:
     return folder.parent / f"{folder.name}_aligned"
 
 
-def _aligned_images(folder: Path):
+def _aligned_media(folder: Path):
     out = _aligned_output_for(folder)
     if not out.is_dir():
         return None
     imgs = sorted(
         f for f in out.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+        if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
     )
     return imgs or None
+
+
+# Back-compat alias.
+_aligned_images = _aligned_media
 
 
 def folder_is_aligned(folder, use_aligned=True) -> bool:
     """True when merging `folder` contributes aligned output for the given
     checkbox state: the folder itself is an '*_aligned' folder containing
-    images, or (only when use_aligned) it has an aligned output with images."""
+    media, or (only when use_aligned) it has an aligned output with media."""
     folder = Path(folder)
     if folder.name.lower().endswith("_aligned"):
-        return _contains_images(folder)
-    return use_aligned and _contains_images(_aligned_output_for(folder))
+        return _contains_media(folder)
+    return use_aligned and _contains_media(_aligned_output_for(folder))
 
 
 class BatchManager:
@@ -63,12 +74,12 @@ class BatchManager:
         return _aligned_output_for(Path(folder))
 
     def is_done(self, folder: Path) -> bool:
-        """A batch item is done when its aligned output exists and has images."""
-        return _contains_images(self.aligned_output_for(folder))
+        """A batch item is done when its aligned output exists and has media."""
+        return _contains_media(self.aligned_output_for(folder))
 
     def discover_subfolders(self) -> list:
-        """Folders to process: image-bearing sub-folders (or un-done aligned
-        outputs) plus the root itself when it holds loose images."""
+        """Folders to process: media-bearing sub-folders (or un-done aligned
+        outputs) plus the root itself when it holds loose media."""
         folders = []
         for sub in sorted(self.root.iterdir()):
             if not sub.is_dir():
@@ -80,14 +91,14 @@ class BatchManager:
                 continue
             if "_preview_" in name:
                 continue
-            if _contains_images(sub) or _contains_images(_aligned_output_for(sub)):
+            if _contains_media(sub) or _contains_media(_aligned_output_for(sub)):
                 folders.append(sub)
-        if _contains_images(self.root):
+        if _contains_media(self.root):
             folders.insert(0, self.root)
         return folders
 
     def discover_all_folders(self) -> list:
-        """Every image-bearing subfolder, including '*_aligned' outputs,
+        """Every media-bearing subfolder, including '*_aligned' outputs,
         for display in the batch list. Discarded and preview caches excluded."""
         folders = []
         for sub in sorted(self.root.iterdir()):
@@ -98,9 +109,9 @@ class BatchManager:
                 continue
             if "_preview_" in name:
                 continue
-            if _contains_images(sub) or _contains_images(_aligned_output_for(sub)):
+            if _contains_media(sub) or _contains_media(_aligned_output_for(sub)):
                 folders.append(sub)
-        if _contains_images(self.root):
+        if _contains_media(self.root):
             folders.insert(0, self.root)
         return folders
 
@@ -115,7 +126,7 @@ class BatchManager:
                 name = folder.name
             done = self.is_done(folder)
             if not done and folder.name.lower().endswith("_aligned"):
-                done = _contains_images(folder)
+                done = _contains_media(folder)
             output = self.aligned_output_for(folder)
             if folder.name.lower().endswith("_aligned"):
                 output = folder
@@ -136,11 +147,11 @@ class BatchManager:
 
 
 def merge_folders(sources, dest, use_aligned=True, delete_sources=False) -> dict:
-    """Copy images from each source folder into dest, prefixing each file with
+    """Copy media from each source folder into dest, prefixing each file with
     its source folder name. Returns a report dict.
 
-    dest is created lazily, only when the first image is copied. When
-    delete_sources is True, every source whose images were fully merged is
+    dest is created lazily, only when the first file is copied. When
+    delete_sources is True, every source whose files were fully merged is
     removed afterwards (by rmtree); failed sources are never deleted."""
     dest = Path(dest)
 
@@ -155,15 +166,15 @@ def merge_folders(sources, dest, use_aligned=True, delete_sources=False) -> dict
         src = Path(src)
         src_name = src.name
         if use_aligned:
-            imgs = _aligned_images(src) or sorted(
+            imgs = _aligned_media(src) or sorted(
                 f for f in src.iterdir()
-                if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+                if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
             )
         else:
             try:
                 imgs = sorted(
                     f for f in src.iterdir()
-                    if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+                    if f.is_file() and f.suffix.lower() in MEDIA_EXTENSIONS
                 )
             except OSError as e:
                 skipped += 1
