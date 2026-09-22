@@ -36,26 +36,41 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
-  echo "API already running on :${API_PORT}"
-else
-  echo "Starting API on :${API_PORT}..."
-  FPA_API_PORT="$API_PORT" "$ROOT/venv/bin/python" -m api.app &
-  API_PID=$!
-  for _ in $(seq 1 50); do
-    if curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
-      break
-    fi
-    if ! kill -0 "$API_PID" 2>/dev/null; then
-      echo "API process exited before becoming healthy."
-      exit 1
-    fi
-    sleep 0.1
-  done
-  if ! curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
-    echo "API did not start on :${API_PORT}"
+kill_port_listeners() {
+  local port="$1"
+  local pids=""
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null || true)"
+  fi
+  if [ -n "$pids" ]; then
+    echo "Stopping process(es) on :${port}..."
+    # shellcheck disable=SC2086
+    kill $pids 2>/dev/null || true
+    sleep 0.3
+    # shellcheck disable=SC2086
+    kill -9 $pids 2>/dev/null || true
+  fi
+}
+
+# Always (re)start the API so new routes / code changes apply. A leftover
+# process from an earlier session was causing 404s (e.g. /arrange/clear).
+kill_port_listeners "$API_PORT"
+echo "Starting API on :${API_PORT}..."
+FPA_API_PORT="$API_PORT" FPA_API_RELOAD=1 "$ROOT/venv/bin/python" -m api.app &
+API_PID=$!
+for _ in $(seq 1 50); do
+  if curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+    break
+  fi
+  if ! kill -0 "$API_PID" 2>/dev/null; then
+    echo "API process exited before becoming healthy."
     exit 1
   fi
+  sleep 0.1
+done
+if ! curl -sf "http://127.0.0.1:${API_PORT}/health" >/dev/null 2>&1; then
+  echo "API did not start on :${API_PORT}"
+  exit 1
 fi
 
 echo "Web UI: http://localhost:${WEB_PORT}"

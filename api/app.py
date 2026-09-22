@@ -985,7 +985,8 @@ def batch_is_aligned(folder: str, use_aligned: bool = True):
 def run():
     import uvicorn
     port = int(os.environ.get("FPA_API_PORT", "8765"))
-    uvicorn.run("api.app:app", host="127.0.0.1", port=port, reload=False)
+    reload = os.environ.get("FPA_API_RELOAD", "").strip().lower() in ("1", "true", "yes")
+    uvicorn.run("api.app:app", host="127.0.0.1", port=port, reload=reload)
 
 
 if __name__ == "__main__":
