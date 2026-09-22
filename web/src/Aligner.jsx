@@ -41,7 +41,7 @@ const HOTKEYS_ORIGINAL = new Set(['Enter', ' ', 'Delete', 'Backspace', 'h', 'H',
 /** Extra keys on Preview. */
 const HOTKEYS_PREVIEW = new Set(['c', 'C', 'Enter', '<', '>', ',', '.', ' '])
 /** Extra keys on Arrange. */
-const HOTKEYS_ARRANGE = new Set(['0', '1', '2', '3', '4', '5', '6', 'Backspace'])
+const HOTKEYS_ARRANGE = new Set(['0', '1', '2', '3', '4', '5', '6', 'Backspace', 'Delete'])
 const ARRANGEMENT_SLOTS = ['original', '1', '2', '3', '4', '5', '6']
 const PREVIEW_WRAP_KEY = 'fpa-preview-wrap'
 const MASK_FIT_KEY = 'fpa-mask-fit'
@@ -2597,6 +2597,7 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
   const [resetOpen, setResetOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [clearSlotOpen, setClearSlotOpen] = useState(false)
+  const [clearSlotTarget, setClearSlotTarget] = useState(null)
   const [clearingSlot, setClearingSlot] = useState(false)
   const [progress, setProgress] = useState(null)
   const [exportError, setExportError] = useState('')
@@ -2844,13 +2845,26 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
     }
   }
 
+  const openClearSlot = (slot) => {
+    const target = String(slot || session.arrangement_active || 'original')
+    if (target === 'original' || target === '0') return
+    if (!session.arrangements?.[target]) return
+    setClearSlotTarget(target)
+    setClearSlotOpen(true)
+  }
+
   const confirmClearSlot = async () => {
+    const slot = clearSlotTarget || session.arrangement_active || 'original'
+    if (slot === 'original' || slot === '0') {
+      setClearSlotOpen(false)
+      return
+    }
     setClearingSlot(true)
     setError('')
     try {
-      const active = session.arrangement_active || 'original'
-      apply(await api.arrangeClear({ slot: active }))
+      apply(await api.arrangeClear({ slot }))
       setClearSlotOpen(false)
+      setClearSlotTarget(null)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -3013,7 +3027,8 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
         if (tab === 'arrange') {
           e.preventDefault()
           const active = session.arrangement_active || 'original'
-          if (active !== 'original' && session.arrangements?.[active]) {
+          if (active !== 'original' && active !== '0' && session.arrangements?.[active]) {
+            setClearSlotTarget(active)
             setClearSlotOpen(true)
           }
           return
@@ -3506,7 +3521,7 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
                   const method = session.arrangement_methods?.[slot]
                   const modified = Boolean(session.arrangement_modified?.[slot])
                   const methodName = arrangeMethodLabel(method)
-                  const label = slot === 'original' ? 'Original' : `Slot ${slot}`
+                  const label = slot === 'original' ? 'OG (Original)' : `Slot ${slot}`
                   const title = [
                     label,
                     methodName ? methodName : null,
@@ -3522,7 +3537,7 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
                       aria-label={title}
                       onClick={() => recallSlot(slot)}
                     >
-                      <span className="arrange-slot-num">{slot === 'original' ? 'Original' : slot}</span>
+                      <span className="arrange-slot-num">{slot === 'original' ? 'OG' : slot}</span>
                       {method ? (
                         <span className={`arrange-slot-method${modified ? ' is-faded' : ''}`} aria-hidden="true">
                           {arrangeMethodIcon(method)}
@@ -3680,10 +3695,7 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
             label="Clear slot"
             danger
             disabled={(session.arrangement_active || 'original') === 'original'}
-            onClick={() => {
-              const active = session.arrangement_active || 'original'
-              if (active !== 'original' && session.arrangements?.[active]) setClearSlotOpen(true)
-            }}
+            onClick={() => openClearSlot(session.arrangement_active)}
           />
         )}
         <Hotkey kbd="R" label="Reset" danger onClick={() => setResetOpen(true)} />
@@ -3692,18 +3704,24 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
       </div>
 
       {clearSlotOpen && (
-        <div className="export-overlay" onClick={() => !clearingSlot && setClearSlotOpen(false)}>
+        <div className="export-overlay" onClick={() => !clearingSlot && (setClearSlotOpen(false), setClearSlotTarget(null))}>
           <div className="export-card card" onClick={(e) => e.stopPropagation()}>
             <h2>Clear arrangement slot?</h2>
             <p className="muted">
-              Removes slot {session.arrangement_active || ''} and restores the Original order.
+              Removes slot {clearSlotTarget || session.arrangement_active || ''} and restores the Original order.
               This cannot be undone.
             </p>
             <div className="row" style={{ marginTop: 16 }}>
               <button className="danger" disabled={clearingSlot} onClick={confirmClearSlot}>
                 {clearingSlot ? 'Clearing…' : 'Clear slot'}
               </button>
-              <button className="secondary" disabled={clearingSlot} onClick={() => setClearSlotOpen(false)}>Cancel</button>
+              <button
+                className="secondary"
+                disabled={clearingSlot}
+                onClick={() => { setClearSlotOpen(false); setClearSlotTarget(null) }}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

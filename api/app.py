@@ -563,11 +563,10 @@ def arrange_reverse():
 
 
 @app.post("/arrange/clear")
-def arrange_clear(body: Optional[ArrangeClearBody] = None):
+def arrange_clear(body: ArrangeClearBody = ArrangeClearBody()):
     """Clear a numeric arrangement slot and recall Original."""
     core = _core()
-    slot = body.slot if body else None
-    ok, err = core.clear_arrangement_slot(slot)
+    ok, err = core.clear_arrangement_slot(body.slot)
     if not ok:
         raise HTTPException(400, err or "Could not clear slot")
     return core.session_snapshot()

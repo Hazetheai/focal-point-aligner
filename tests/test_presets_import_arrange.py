@@ -310,15 +310,15 @@ def test_auto_arrange_overwrites_active_when_full(client, tmp_path, monkeypatch)
         return order, [("white", 1.0)] * len(paths)
 
     monkeypatch.setattr("arrange_auto.sort_indices_by_color", fake_color)
-    for slot in ("1", "2", "3", "4", "5", "6"):
-        last = _sse_last(client.post("/arrange/auto", json={"mode": "color", "slot": slot}))
-        assert last.get("phase") == "complete"
-    # Active is 6; next auto without slot should overwrite 6 (not jump to 1)
+    # Fill only slot 2 (slot 1 stays free) — AutoArrange must overwrite active 2, not free 1
+    last = _sse_last(client.post("/arrange/auto", json={"mode": "color", "slot": "2"}))
+    assert last["arrangement_active"] == "2"
     last = _sse_last(client.post("/arrange/auto", json={"mode": "color"}))
     assert last.get("phase") == "complete"
-    assert last["arrangement_active"] == "6"
-    assert last["arrangement_methods"]["6"] == "color"
-    # On original with all full → overwrite slot 1
+    assert last["arrangement_active"] == "2"
+    assert last["arrangement_methods"]["2"] == "color"
+    assert "1" not in last.get("arrangements", {}) or last["arrangement_active"] == "2"
+    # On original → always slot 1
     client.post("/arrange/recall", json={"slot": "original"})
     last = _sse_last(client.post("/arrange/auto", json={"mode": "color"}))
     assert last["arrangement_active"] == "1"

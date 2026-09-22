@@ -1887,16 +1887,13 @@ class FocalPointAlignerCore:
         return [str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)]
 
     def _allocate_arrangement_slot(self):
-        """Pick a numeric slot for a new AutoArrange / leave-commit.
+        """Pick a numeric slot for AutoArrange / leave-commit from Original.
 
-        Prefer the first free slot among 1…N. When all are filled, overwrite the
-        active numeric slot. If the active slot is Original (or invalid), overwrite
-        slot ``1``. Original is never allocated.
+        If a numeric slot (1…N) is active, always overwrite that slot.
+        If Original is active (or the active slot is invalid), always use slot ``1``.
+        Original itself is never allocated.
         """
-        valid = self._numeric_arrangement_slots()
-        free = next((s for s in valid if s not in self.arrangements), None)
-        if free is not None:
-            return free
+        valid = set(self._numeric_arrangement_slots())
         active = str(self.arrangement_active or "original")
         if active in valid:
             return active
