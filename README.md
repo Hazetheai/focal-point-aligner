@@ -2,7 +2,7 @@
 
 Align a folder of photos (and videos) around a focal point, then export them to a shared frame size.
 
-The GUI is a **React + FastAPI** app. On macOS you can also run an unsigned **Tauri** `.app` shell that embeds the web UI and starts the Python API from this project’s `./venv`.
+The GUI is a **React + FastAPI** app with light/dark theme. On macOS you can also run an unsigned **Tauri** `.app` shell that embeds the web UI and starts the Python API from this project’s `./venv`.
 
 ## Run (development)
 
@@ -16,7 +16,7 @@ Creates `./venv` if needed, installs deps, starts the API on **8765**, Vite on *
 
 Equivalent: `./dev.sh`
 
-**Video export / split** also need system **ffmpeg** on your `PATH` (`brew install ffmpeg` on macOS). OpenCV is enough for discovery, scrubbing, and still-frame preview.
+**Video** (scrub, keyframes, export) needs system **ffmpeg** on your `PATH` (`brew install ffmpeg` on macOS). OpenCV is used first for frames; ffmpeg is the fallback for codecs OpenCV cannot open (e.g. HAP).
 
 ## Desktop app (unsigned Tauri)
 
@@ -37,35 +37,38 @@ There is no PyQt / PyInstaller app path anymore.
 
 ## How it works
 
-1. **Opener** — Single / Batch / **Import**. Set target size with ratio + resolution presets (or manual W×H) → **Start**.
-2. **Original** — click/drag focal; wheel resizes crop; **Enter** saves+advances; **X** / **Shift+middle-click** discards; **D** duplicates. Videos show a scrubber (work / in / out); **Set Out** can Trim or Split.
-3. **Preview** — pan/zoom fine-tune; **Enter** commits; **C** compares; live zoom indicator.
-4. **Arrange** — drag thumbs; AutoArrange (Color / Depth / Lead / Faces); **Reverse**; slots **0–9**.
-5. **E** / Export writes `{idx:04d}.jpg` for images and `{idx:04d}.mp4` for videos; focals stay in `<input>/focal_points.json`.
+1. **Opener** — Single / Batch / **Import**. Set target size with ratio + resolution presets (or manual W×H) → **Start**. Header theme toggle switches light/dark (also follows system when preference is “system”).
+2. **Original** — click/drag focal; wheel resizes crop; **Enter** saves+advances; **X** / **Shift+middle-click** discards; **D** / action-bar Duplicate (right-aligned). Stage uses a theme-aware checkerboard. Videos: scrubber for work / in / out; **Shift+click** adds a keyframe; marker click sets ease; **Del** clears all keyframes.
+3. **Preview** — pan/zoom fine-tune; Flip X / Flip Y; Overlay prev/clear/next (screen-centered); Compare (**C**) + Commit (**Enter**); Wrap for looping ←→. Videos: **Play** / **Space**; **Keyframes** popover shows `selected/total` and picks by ordinal.
+4. **Arrange** — Original/Aligned thumbs; Reverse; slots **0–6**; AutoArrange Color / Depth / Lead / Faces on the action bar; drag to reorder (video thumbs show ▶).
+5. **E** / Export writes `{idx:04d}.jpg` for images and `{idx:04d}.mp4` for videos (ffmpeg); focals stay in `<input>/focal_points.json`.
 6. **Esc** returns to the opener (batch → next folder).
 
-Supported stills: `.jpg` `.jpeg` `.png` `.bmp` `.webp` `.tiff`. Videos: `.mp4` `.mov` `.m4v` `.webm`.
+Supported stills: `.jpg` `.jpeg` `.png` `.bmp` `.webp` `.tiff`. Videos: `.mp4` `.mov` `.m4v` `.webm` `.hap`.
 
 ## Keyboard
 
 | Key | Action |
 |-----|--------|
 | Enter | Original: save+next · Preview: commit draft |
-| Space / ← → | Skip / navigate |
+| Space | Original: skip · Preview video: play/pause |
+| ← → | Navigate (Preview can Wrap) |
 | X / Shift+middle click | Discard |
 | D | Duplicate (Original) |
+| Del | Clear focal (images) / clear all keyframes (videos) |
 | H / G / I | Home / Grid / Mask |
-| C | Compare (Preview or Arrange) |
-| 0–9 | Arrange slots |
+| C | Compare (Preview) |
+| `<` `>` | Overlay neighbor (Preview) |
+| 0–6 | Arrange slots |
 | P / O / A | Preview / Orient / Arrange |
 | R / E / Esc | Reset / Export / Opener |
 
-Hotkeys are tab-scoped.
+Hotkeys are tab-scoped. Discard / Del / Reset are marked as destructive in the hotkey bar.
 
 ## Batch, import, merge
 
-- **Batch** walks subfolders; done when `<sub>_aligned` already has images or videos.
-- **Import** downloads URL lists, then continues as Batch.
+- **Batch** walks subfolders; done when `<sub>_aligned` already has media.
+- **Import** downloads pasted URLs, a `.txt` list, or a folder of lists, then continues as Batch. List filenames are parsed with a user-defined pattern (default `image_urls--{name}` → folder `name/`); prefix/suffix around `{name}` are editable in the Opener and stored as `import_name_pattern` in prefs.
 - **Merge** / **Move aligned** as before.
 
 ## CLI
@@ -91,9 +94,10 @@ Hotkeys are tab-scoped.
 | `build_macos.sh` | Unsigned Tauri build |
 | `api/app.py` | FastAPI |
 | `web/` | React UI |
-| `aligner_core.py` | Crop / state / export |
+| `web/src/theme.js` | Light / dark / system theme preference |
+| `aligner_core.py` | Crop / state / export / video keyframes |
 | `arrange_auto.py` | AutoArrange |
-| `import_download.py` | URL download |
+| `import_download.py` | URL download + list naming patterns |
 | `batch.py` | Batch / merge / move |
 | `cli.py` | CLI |
 | `src-tauri/` | Tauri 2 shell |
@@ -105,6 +109,7 @@ Unsigned `.app` builds stay on this machine (no GitHub/Apple publish):
 ```bash
 ./scripts/install-git-hooks.sh   # once
 git checkout release && git merge main   # builds into releases/
+# or: ./scripts/release.sh --bump patch
 ./scripts/open-app.sh
 ```
 

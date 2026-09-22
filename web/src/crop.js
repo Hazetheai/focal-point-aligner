@@ -125,7 +125,9 @@ export function nudgeCropScale(cropScale, deltaY, factor = 1.08) {
   return clampCropScale(next)
 }
 
-/** Port of aligner_core.transform_focal_for_flips — map unflipped focal into flipped space. */
+/** Map unflipped focal into flipped space.
+ * flipH = Flip Y (left ↔ right); flipV = Flip X (upside down).
+ */
 export function transformFocalForFlips(fx, fy, width, height, flipH = false, flipV = false) {
   let x = Number(fx)
   let y = Number(fy)
@@ -236,4 +238,72 @@ export function drawCompositionMask(ctx, maskImage, dx, dy, dw, dh, {
   ctx.save()
   ctx.drawImage(off, dx, dy, dw, dh)
   ctx.restore()
+}
+
+export const KEYFRAME_EASES = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
+export const DEFAULT_KEYFRAME_EASE = 'ease-in-out'
+
+export function normalizeEase(ease) {
+  const e = String(ease || DEFAULT_KEYFRAME_EASE).toLowerCase().trim()
+  return KEYFRAME_EASES.includes(e) ? e : DEFAULT_KEYFRAME_EASE
+}
+
+export function applyEase(t, ease = DEFAULT_KEYFRAME_EASE) {
+  const x = Math.max(0, Math.min(1, Number(t) || 0))
+  const e = normalizeEase(ease)
+  if (e === 'linear') return x
+  if (e === 'ease-in') return x * x
+  if (e === 'ease-out') return 1 - (1 - x) * (1 - x)
+  if (x < 0.5) return 2 * x * x
+  return 1 - ((-2 * x + 2) ** 2) / 2
+}
+
+export function normalizeKeyframes(raw) {
+  const byFrame = new Map()
+  for (const item of raw || []) {
+    if (!item || item.frame == null) continue
+    const frame = Math.round(Number(item.frame))
+    if (!Number.isFinite(frame)) continue
+    const fx = Number(item.focal_x)
+    const fy = Number(item.focal_y)
+    if (!Number.isFinite(fx) || !Number.isFinite(fy)) continue
+    byFrame.set(frame, {
+      frame,
+      focal_x: fx,
+      focal_y: fy,
+      crop_scale: clampCropScale(item.crop_scale ?? DEFAULT_CROP_SCALE),
+      ease: normalizeEase(item.ease),
+    })
+  }
+  return [...byFrame.values()].sort((a, b) => a.frame - b.frame)
+}
+
+/** Return { x, y, cropScale } at frame from keyframes, or null. */
+export function interpolateFromKeyframes(keyframes, frame) {
+  const kfs = normalizeKeyframes(keyframes)
+  if (!kfs.length) return null
+  const f = Math.round(Number(frame) || 0)
+  if (f <= kfs[0].frame) {
+    const k = kfs[0]
+    return { x: k.focal_x, y: k.focal_y, cropScale: k.crop_scale }
+  }
+  if (f >= kfs[kfs.length - 1].frame) {
+    const k = kfs[kfs.length - 1]
+    return { x: k.focal_x, y: k.focal_y, cropScale: k.crop_scale }
+  }
+  for (let i = 0; i < kfs.length - 1; i += 1) {
+    const a = kfs[i]
+    const b = kfs[i + 1]
+    if (a.frame <= f && f <= b.frame) {
+      const span = Math.max(1, b.frame - a.frame)
+      const t = applyEase((f - a.frame) / span, a.ease)
+      return {
+        x: a.focal_x + (b.focal_x - a.focal_x) * t,
+        y: a.focal_y + (b.focal_y - a.focal_y) * t,
+        cropScale: clampCropScale(a.crop_scale + (b.crop_scale - a.crop_scale) * t),
+      }
+    }
+  }
+  const k = kfs[kfs.length - 1]
+  return { x: k.focal_x, y: k.focal_y, cropScale: k.crop_scale }
 }

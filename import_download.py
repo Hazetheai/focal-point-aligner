@@ -1,7 +1,8 @@
 """Download images from URL lists — vendored from imgtools (download-only).
 
-Uses httpx instead of requests. Folder naming matches image_urls--<name>.txt
-semantics so results plug into FPA batch mode.
+Uses httpx instead of requests. Folder naming is driven by a user-defined
+pattern (default ``image_urls--{name}``) so list files like
+``image_urls--cats.txt`` download into ``cats/``.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ REQUEST_HEADERS = {
     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+DEFAULT_NAME_PATTERN = "image_urls--{name}"
 
 
 def sanitize_filename(filename: str) -> str:
@@ -124,11 +127,39 @@ def download_images(
     return {"skipped": False, "downloaded": downloaded, "failed": len(failed_urls)}
 
 
-def extract_folder_name_from_filename(input_file: str) -> Optional[str]:
+def extract_folder_name_from_filename(
+    input_file: str,
+    pattern: Optional[str] = None,
+) -> Optional[str]:
+    """Derive a download folder name from a URL-list filename.
+
+    ``pattern`` uses ``{name}`` as the capture token (default
+    ``image_urls--{name}``). Without ``{name}``, ``pattern`` is treated as a
+    literal prefix and the remainder of the stem becomes the folder name.
+    Falls back to a legacy ``--`` split, then ``None``.
+    """
     basename = os.path.basename(input_file)
-    name_without_ext = os.path.splitext(basename)[0]
-    if "--" in name_without_ext:
-        return name_without_ext.split("--", 1)[1]
+    stem = os.path.splitext(basename)[0]
+    pat = (pattern or DEFAULT_NAME_PATTERN).strip() or DEFAULT_NAME_PATTERN
+
+    if "{name}" in pat:
+        parts = pat.split("{name}")
+        regex = "^" + "".join(
+            re.escape(part) + ("(.+)" if i < len(parts) - 1 else "")
+            for i, part in enumerate(parts)
+        ) + "$"
+        m = re.match(regex, stem)
+        if m:
+            captured = (m.group(1) or "").strip("_- ")
+            return captured or None
+    elif pat and stem.startswith(pat):
+        rest = stem[len(pat):].strip("_- ")
+        return rest or None
+
+    # Legacy: anything after the first "--"
+    if "--" in stem:
+        rest = stem.split("--", 1)[1].strip("_- ")
+        return rest or None
     return None
 
 
@@ -177,6 +208,7 @@ def download_from_sources(
     urls: Optional[list[str]] = None,
     url_file: Optional[str] = None,
     url_folder: Optional[str] = None,
+    name_pattern: Optional[str] = None,
     force: bool = False,
     progress: Optional[Callable[[dict], None]] = None,
 ):
@@ -188,6 +220,7 @@ def download_from_sources(
     total_urls = 0
     total_downloaded = 0
     total_failed = 0
+    pattern = (name_pattern or DEFAULT_NAME_PATTERN).strip() or DEFAULT_NAME_PATTERN
 
     jobs = []
     if urls:
@@ -197,14 +230,14 @@ def download_from_sources(
         path = Path(url_file).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Not a file: {path}")
-        folder_name = extract_folder_name_from_filename(str(path)) or path.stem
+        folder_name = extract_folder_name_from_filename(str(path), pattern) or path.stem
         jobs.append((folder_name, read_urls_from_file(str(path))))
     if url_folder:
         folder = Path(url_folder).expanduser().resolve()
         if not folder.is_dir():
             raise NotADirectoryError(f"Not a directory: {folder}")
         for txt in find_url_files_in_folder(str(folder)):
-            folder_name = extract_folder_name_from_filename(txt) or Path(txt).stem
+            folder_name = extract_folder_name_from_filename(txt, pattern) or Path(txt).stem
             jobs.append((folder_name, read_urls_from_file(txt)))
 
     if not jobs:
@@ -241,4 +274,5 @@ def download_from_sources(
         "total_urls": total_urls,
         "total_downloaded": total_downloaded,
         "total_failed": total_failed,
+        "name_pattern": pattern,
     }

@@ -10,7 +10,7 @@ import shutil
 from pathlib import Path
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
-VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm'}
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm', '.hap'}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 
 logger = logging.getLogger(__name__)

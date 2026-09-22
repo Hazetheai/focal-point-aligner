@@ -38,7 +38,7 @@ COLOR_BUCKETS = [
 ]
 
 
-VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm'}
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm', '.hap'}
 
 
 def _load_bgr(path, max_side=256, frame_idx=None):

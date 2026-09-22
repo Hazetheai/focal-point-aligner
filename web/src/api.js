@@ -95,6 +95,10 @@ export const api = {
   arrangeReverse: () => req('/arrange/reverse', { method: 'POST', body: '{}' }),
   videoRange: (body) => req('/video/range', { method: 'POST', body: JSON.stringify(body) }),
   videoSplit: (body) => req('/video/split', { method: 'POST', body: JSON.stringify(body) }),
+  videoKeyframe: (body) => req('/video/keyframe', { method: 'POST', body: JSON.stringify(body) }),
+  videoKeyframeMove: (body) => req('/video/keyframe/move', { method: 'POST', body: JSON.stringify(body) }),
+  videoKeyframeEase: (body) => req('/video/keyframe/ease', { method: 'POST', body: JSON.stringify(body) }),
+  videoKeyframeDelete: (body) => req('/video/keyframe/delete', { method: 'POST', body: JSON.stringify(body) }),
 }
 
 export function mediaUrl(kind, idx, extra = '') {

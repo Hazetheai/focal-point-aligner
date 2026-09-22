@@ -74,6 +74,7 @@ class FocalBody(BaseModel):
     crop_scale: Optional[float] = None
     flip_h: Optional[bool] = None
     flip_v: Optional[bool] = None
+    keyframe_frame: Optional[int] = None
 
 
 class NavigateBody(BaseModel):
@@ -127,6 +128,7 @@ class ImportDownloadBody(BaseModel):
     urls: Optional[list[str]] = None
     url_file: Optional[str] = None
     url_folder: Optional[str] = None
+    name_pattern: Optional[str] = None
     force: bool = False
 
 
@@ -162,6 +164,32 @@ class VideoRangeBody(BaseModel):
 class VideoSplitBody(BaseModel):
     index: Optional[int] = None
     at_frame: int
+
+
+class VideoKeyframeBody(BaseModel):
+    index: Optional[int] = None
+    frame: int
+    focal_x: Optional[float] = None
+    focal_y: Optional[float] = None
+    crop_scale: Optional[float] = None
+    ease: Optional[str] = None
+
+
+class VideoKeyframeMoveBody(BaseModel):
+    index: Optional[int] = None
+    from_frame: int
+    to_frame: int
+
+
+class VideoKeyframeEaseBody(BaseModel):
+    index: Optional[int] = None
+    frame: int
+    ease: str
+
+
+class VideoKeyframeDeleteBody(BaseModel):
+    index: Optional[int] = None
+    frame: int
 
 
 def pick_folder_dialog(title: str = "Select folder") -> Optional[str]:
@@ -407,10 +435,14 @@ def import_download(body: ImportDownloadBody):
                 urls=urls,
                 url_file=body.url_file,
                 url_folder=body.url_folder,
+                name_pattern=body.name_pattern,
                 force=body.force,
                 progress=on_progress,
             )
-            save_prefs({"last_batch_root_dir": report["root"], "mode": "batch"})
+            prefs_update = {"last_batch_root_dir": report["root"], "mode": "batch"}
+            if body.name_pattern:
+                prefs_update["import_name_pattern"] = body.name_pattern
+            save_prefs(prefs_update)
             q.put(("done", report))
         except Exception as e:
             q.put(("error", str(e)))
@@ -535,6 +567,7 @@ def set_focal(body: FocalBody):
         crop_scale=body.crop_scale,
         flip_h=body.flip_h,
         flip_v=body.flip_v,
+        keyframe_frame=body.keyframe_frame,
     )
     core.save_focal_points()
     return core.session_snapshot()
@@ -795,6 +828,59 @@ def video_split(body: VideoSplitBody):
     ok, err = core.split_video_at(idx, body.at_frame)
     if not ok:
         raise HTTPException(400, err or "Split failed")
+    return core.session_snapshot()
+
+
+@app.post("/video/keyframe")
+def video_keyframe_upsert(body: VideoKeyframeBody):
+    core = _core()
+    idx = body.index if body.index is not None else core.current_idx
+    if not (0 <= idx < core.total_images):
+        raise HTTPException(400, "Index out of range")
+    if not core.is_video(idx):
+        raise HTTPException(400, "Not a video")
+    fx = body.focal_x
+    fy = body.focal_y
+    if fx is None or fy is None:
+        # Default to current focal or center
+        if idx in core.focal_points:
+            fx, fy = core.focal_points[idx]
+        else:
+            w, h = core.image_dimensions.get(idx, (0, 0))
+            fx, fy = (w / 2.0, h / 2.0)
+    if not core.add_or_update_keyframe(
+        idx, body.frame, fx, fy,
+        crop_scale=body.crop_scale,
+        ease=body.ease,
+    ):
+        raise HTTPException(400, "Could not set keyframe")
+    return core.session_snapshot()
+
+
+@app.post("/video/keyframe/move")
+def video_keyframe_move(body: VideoKeyframeMoveBody):
+    core = _core()
+    idx = body.index if body.index is not None else core.current_idx
+    if not core.move_keyframe(idx, body.from_frame, body.to_frame):
+        raise HTTPException(400, "Could not move keyframe")
+    return core.session_snapshot()
+
+
+@app.post("/video/keyframe/ease")
+def video_keyframe_ease(body: VideoKeyframeEaseBody):
+    core = _core()
+    idx = body.index if body.index is not None else core.current_idx
+    if not core.set_keyframe_ease(idx, body.frame, body.ease):
+        raise HTTPException(400, "Could not set ease")
+    return core.session_snapshot()
+
+
+@app.post("/video/keyframe/delete")
+def video_keyframe_delete(body: VideoKeyframeDeleteBody):
+    core = _core()
+    idx = body.index if body.index is not None else core.current_idx
+    if not core.delete_keyframe(idx, body.frame):
+        raise HTTPException(400, "Could not delete keyframe")
     return core.session_snapshot()
 
 

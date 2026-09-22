@@ -11,7 +11,12 @@ from fastapi.testclient import TestClient
 from api.app import app
 import api.app as api_app
 from arrange_auto import classify_dominant_color, sort_indices_by_color
-from import_download import download_from_sources, parse_pasted_urls, sanitize_filename
+from import_download import (
+    download_from_sources,
+    extract_folder_name_from_filename,
+    parse_pasted_urls,
+    sanitize_filename,
+)
 
 
 def _imgs(tmp_path, n=3, colors=None):
@@ -36,6 +41,25 @@ def client(tmp_path, monkeypatch):
 def test_parse_pasted_urls():
     text = "https://a.com/1.jpg\n# comment\nhttps://b.com/2.png\nnot-a-url\n"
     assert parse_pasted_urls(text) == ["https://a.com/1.jpg", "https://b.com/2.png"]
+
+
+def test_extract_folder_name_from_filename_patterns():
+    assert extract_folder_name_from_filename("image_urls--cats.txt") == "cats"
+    assert extract_folder_name_from_filename(
+        "image_urls--cats.txt", "image_urls--{name}"
+    ) == "cats"
+    assert extract_folder_name_from_filename(
+        "prefix_dogs_list.txt", "prefix_{name}_list"
+    ) == "dogs"
+    assert extract_folder_name_from_filename(
+        "dogs_urls.txt", "{name}_urls"
+    ) == "dogs"
+    # Prefix-only (no {name}): remainder after literal prefix
+    assert extract_folder_name_from_filename(
+        "batch-foxes.txt", "batch-"
+    ) == "foxes"
+    # No match → None (caller falls back to stem)
+    assert extract_folder_name_from_filename("plain.txt", "image_urls--{name}") is None
 
 
 def test_sanitize_filename():
@@ -165,6 +189,8 @@ def test_auto_arrange_color(client, tmp_path):
     assert last.get("phase") == "complete"
     assert last["arrangement_active"] == "2"
     assert "2" in last["arrangements"]
+    assert last.get("arrangement_methods", {}).get("2") == "color"
+    assert last.get("arrangement_slots") == ["original", "1", "2", "3", "4", "5", "6"]
 
 
 def test_auto_arrange_depth_error_streams(client, tmp_path, monkeypatch):

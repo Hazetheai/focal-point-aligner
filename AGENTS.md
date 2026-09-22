@@ -10,13 +10,13 @@ Current GUI: **React (Vite) + FastAPI**, with an optional **Tauri** macOS `.app`
 
 Workflow:
 
-1. Opener: Single / Batch / **Import** → target size (ratio + resolution presets, or manual W×H) → Start. Import pastes URLs or picks `.txt` / folder-of-lists, downloads into a batch root, then continues as Batch (align → Merge / Move aligned).
-2. **Original**: click/drag focal; wheel resizes crop box; Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Header can change target size mid-session (live crop/preview retarget). For **videos**, a scrubber under the stage sets work/in/out frames; **Set Out** offers Trim vs Split (ffmpeg).
-3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel / Zoom ± to change `crop_scale`; **Flip H / Flip V** toggles (draft dirty includes flips; pan deltas negate under flips); neighbor **Prev / Next** (±0.1 opacity, clamped when no neighbor); Compare (C) + Commit (**Enter** when draft is dirty and not comparing). Toolbar is one row: left Compare/Commit/Wrap/flips · center neighbors · right Zoom −/label/+.
-4. **Arrange**: one toolbar row — Original/Aligned + slot Compare/Show (C) on the left; an **Arrange** dropdown (AutoArrange Color/Depth/Lead/Faces, Reverse, slots Orig+1–9, info) mid-right with progress floating above the trigger; Zoom −/%/+ on the far right. Drag thumbnails to reorder; Reverse toggles order in the active slot (button stays lit while reversed); hotkeys `0`–`9` recall slots; Manual DnD commits to a slot when leaving Arrange.
+1. Opener: Single / Batch / **Import** → target size (ratio + resolution presets, or manual W×H) → Start. Import pastes URLs or picks `.txt` / folder-of-lists, downloads into a batch root, then continues as Batch (align → Merge / Move aligned). Header **theme** toggle (light / dark / system) via `web/src/theme.js` (`data-theme` + `fpa-theme` in localStorage).
+2. **Original**: click/drag focal; wheel resizes crop box; Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Stage background is a **theme-aware checkerboard** (light tiles in light mode, dark in dark). Header can change target size mid-session (live crop/preview retarget). Action-bar **Duplicate** is right-aligned. For **videos**, a scrubber under the stage sets work/in/out frames; **Shift+click** the track (between In/Out) adds a **keyframe** at the current focal+crop_scale; click a diamond marker for ease (linear / ease-in / ease-out / ease-in-out) or Delete; drag markers to retime. Focal moves write the keyframe at the playhead. **Del** clears all keyframes (and the focal) for that clip (destructive hotkey styling).
+3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel / Zoom ± to change `crop_scale`; **Flip X** (upside down) / **Flip Y** (left ↔ right) icon toggles (draft dirty includes flips; pan deltas negate under flips); neighbor Overlay (±0.1 opacity, clamped when no neighbor) is **screen-centered** in the toolbar (grid `1fr auto 1fr`); Compare (C) + Commit (**Enter** when draft is dirty and not comparing). For videos: **Play** / **Space** loops the trim with interpolated keyframes; a right-aligned **Keyframes** action-bar popover (same row as Size / Guides / Details) shows `selected/total` and selects by ordinal (1…N); progress shows `i/N` of the trimmed span. Toolbar is one row of compact icon buttons (tooltips on hover): left Compare/Commit/flips/Zoom · center Overlay · right Play/Wrap.
+4. **Arrange**: one toolbar row — Original/Aligned + Reverse + slots 0–6 + Zoom. AutoArrange Color/Depth/Lead/Faces icons live on the action bar with an Info popover; progress floats above that cluster. Drag thumbnails to reorder; video thumbs show a small ▶ badge; Reverse toggles order in the active slot (button stays lit while reversed); hotkeys `0`–`6` recall slots; Manual DnD commits to a slot when leaving Arrange.
 5. **E** / Export writes `{idx:04d}.jpg` for images and `{idx:04d}.mp4` for videos (ffmpeg required for video; live SSE progress; focals JSON is kept).
 6. **Esc** (or Done) returns to the opener; in batch mode it opens the next pending folder.
-7. Original **D** duplicates the current media on disk (`name__dup.ext`) and inserts it after the current index with the same focal/crop settings.
+7. Original **D** duplicates the current media on disk (`name__dup.ext`) and inserts it after the current index with the same focal/crop settings (videos deepcopy keyframes).
 
 ## One command for the GUI
 
@@ -43,18 +43,26 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Video media
 
-- Extensions: `.mp4`, `.mov`, `.m4v`, `.webm` (with images under `MEDIA_EXTENSIONS`). Invalid videos go to `discarded/invalid/` like bad images.
+- Extensions: `.mp4`, `.mov`, `.m4v`, `.webm`, `.hap` (with images under `MEDIA_EXTENSIONS`). Invalid videos go to `discarded/invalid/` like bad images.
 - Discovery / batch folders treat videos as media (same queue / merge rules).
-- Session images include `media_kind` (`image`|`video`) and for videos: `fps`, `frame_count`, `duration_ms`, `in_frame`, `out_frame`, `work_frame` (defaults `0`, `frame_count-1`, mid).
-- Original stage uses `GET /media/frame/{idx}?frame=N` (cached under `.fpa_cache/frames/`). Thumbs / Preview / AutoArrange load the **work_frame**.
-- Scrubber: Set In / Set Out / work playhead. Set Out prompts **Trim** (keep `out_frame`) vs **Split** (`POST /video/split` extracts the remainder via ffmpeg as `{stem}__part2.ext`). Range: `POST /video/range`.
-- Aligned export: images → `{idx:04d}.jpg`; videos → `{idx:04d}.mp4` (decode in..out inclusive, apply flips + `render_aligned`, pipe BGR24 to ffmpeg `libx264` / `yuv420p`). Requires system **ffmpeg** on `PATH` (no new pip dep). Missing ffmpeg → per-item SSE `item_error`.
-- Persist `in_frame` / `out_frame` / `work_frame` on video entries in `focal_points.json`.
+- Session images include `media_kind` (`image`|`video`) and for videos: `fps`, `frame_count`, `duration_ms`, `in_frame`, `out_frame`, `work_frame` (defaults `0`, `frame_count-1`, mid), and `keyframes` (list of `{frame, focal_x, focal_y, crop_scale, ease}`).
+- Original stage uses `GET /media/frame/{idx}?frame=N` (cached under `.fpa_cache/frames/`). Thumbs / Preview load the **work_frame**. **AutoArrange samples `in_frame`** (trim start).
+- Scrubber: In/Out handles + work playhead; Shift+click adds keyframe; marker click → ease popover / Delete; drag to retime (no neighbor crossing). Range: `POST /video/range`. Keyframes: `POST /video/keyframe`, `/move`, `/ease`, `/delete`.
+- Keyframes store focal + `crop_scale` (flips stay clip-wide). `ease` on keyframe *i* governs i→i+1. First focal on a video seeds In/Out (+ work) keyframes. Export interpolates per frame; Preview play uses the same curves client-side (`crop.js`).
+- Frame decode: OpenCV first; **ffmpeg fallback** for HAP / codecs OpenCV cannot open (`probe` via ffprobe). Aligned export still pipes BGR24 → ffmpeg `libx264`.
+- Aligned export: images → `{idx:04d}.jpg`; videos → `{idx:04d}.mp4` (decode in..out inclusive, apply flips + interpolated focal/scale + `render_aligned`, pipe BGR24 to ffmpeg `libx264` / `yuv420p`). Requires system **ffmpeg** on `PATH` (no new pip dep). Missing ffmpeg → per-item SSE `item_error`.
+- Persist `in_frame` / `out_frame` / `work_frame` / `keyframes` on video entries in `focal_points.json`.
 
 ## Import download
 
-- `import_download.py` — vendored imgtools download helpers (httpx). Naming: `image_urls--cats.txt` → `cats/`.
-- `POST /import/download` with `{ dest, name?, urls? | url_file? | url_folder? }` → SSE progress events, final `{ complete, root, folders }` for batch handoff. Opener shows download progress + action log.
+- `import_download.py` — vendored imgtools download helpers (httpx). List naming uses a `{name}` pattern (default `image_urls--{name}` → e.g. `image_urls--cats.txt` → `cats/`). Opener edits prefix + optional suffix around `{name}`; persisted as `import_name_pattern` in `config.json` prefs. `POST /import/download` accepts `name_pattern`.
+- `POST /import/download` with `{ dest, name?, name_pattern?, urls? | url_file? | url_folder? }` → SSE progress events, final `{ complete, root, folders }` for batch handoff. Opener shows download progress + action log.
+
+## Theme
+
+- `web/src/theme.js` — `getThemePreference` / `resolveTheme` / `toggleTheme` / `initTheme`. Preference `light` | `dark` | `system` in `localStorage` key `fpa-theme`.
+- `document.documentElement[data-theme]` drives CSS variables in `web/src/index.css` (surfaces, panels/popovers, danger/error reds, checkerboard, wells). Early boot script in `web/index.html` avoids FOUC.
+- Primary / accent-selected buttons use light text; secondary buttons keep theme text color. Destructive hotkeys (Discard, Del, Reset) use `--error` / `--danger-surface`.
 
 ## AutoArrange & history
 
@@ -62,8 +70,8 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - Reverse (`POST /arrange/reverse`) flips the current order and updates the **active** slot in place — does not create a new preset. Session exposes `arrangement_reversed` so the Reverse control stays lit for that slot until reversed again (or a new AutoArrange overwrites the slot).
 - Depth AutoArrange is near→far only; use Reverse for far→near. Lead match uses the **selected** thumbnail (hover Lead to pulse its border).
 - Arrange: Cmd/Ctrl-click and Shift-click select multiple thumbnails; dragging moves the whole selection as a block.
-- `focal_points.json` stores `arrangements` (`original`, `1`…`9`) and `arrangement_active`. Hotkeys `0`–`9` recall; leaving Arrange commits a manual draft to the next free slot.
-- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`. AutoArrange status floats above the Arrange dropdown trigger (no toolbar reflow).
+- `focal_points.json` stores `arrangements` (`original`, `1`…`6`), `arrangement_active`, `arrangement_methods` (per-slot last AutoArrange/manual mode), and `arrangement_reversed`. Hotkeys `0`–`6` recall; leaving Arrange commits a manual draft to the next free slot.
+- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`. Arrange AutoArrange/slots live in the shared action-bar **Arrange** dropdown (same row as Size / Guides / Details, right-aligned with Reverse); progress floats above that trigger.
 - `load_image_safely` always returns 8-bit BGR (scales 10/12/16-bit sources) so Arrange aligned previews / export are not near-white. Preview cache filenames use a `_u8` suffix.
 
 ## Focal clicks (Original tab)
@@ -98,11 +106,12 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 | `scripts/release.sh` | Local unsigned release into `releases/` |
 | `build_macos.sh` | Unsigned Tauri build |
 | `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, import, arrange, dialogs |
-| `web/src/Opener.jsx` | Single / Batch / Import, size presets, merge/move |
+| `web/src/Opener.jsx` | Single / Batch / Import, size presets, merge/move, import naming pattern |
 | `web/src/Aligner.jsx` | Original / Preview / Arrange, AutoArrange, slots, nav dots, hotkeys |
-| `web/src/crop.js` | JS port of `compute_crop` / `compute_crop_frame` |
+| `web/src/theme.js` | Light / dark / system theme preference |
+| `web/src/crop.js` | JS port of `compute_crop` / `compute_crop_frame` + keyframe ease/lerp |
 | `web/src/presets.js` | Target size ratio + resolution presets |
-| `import_download.py` | URL-list download (paste / .txt / folder-of-.txt) |
+| `import_download.py` | URL-list download (paste / .txt / folder-of-.txt) + `{name}` list patterns |
 | `arrange_auto.py` | Color / depth / lead-match / faces sort helpers |
 | `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export |
 | `batch.py` | **UI-free batch** — discovery, done-detection, `merge_folders()`, `move_aligned_outputs()` |
@@ -117,15 +126,15 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - `discarded: set[str]` — filenames.
 - `current_idx: int` — shared across Original / Preview / Arrange. Tab switches must not change it.
 - `json_path` = `<input_folder>/focal_points.json` (migrates from `<output_folder>/focal_points.json` once if needed). Export cleanup does **not** delete it.
-- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`, `flip_h`, `flip_v`, `media_kind`, and for videos `fps` / `frame_count` / `duration_ms` / `in_frame` / `out_frame` / `work_frame`.
+- Session images also expose `bytes`, `dpi`, `format`, `mode`, `megapixels`, `auto_center`, `focal_at_center`, `crop_scale`, `flip_h`, `flip_v`, `media_kind`, and for videos `fps` / `frame_count` / `duration_ms` / `in_frame` / `out_frame` / `work_frame` / `keyframes`.
 
 ### Persistence (`focal_points.json`)
 
-- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `flip_h`, `flip_v`, `timestamp`; videos also `in_frame` / `out_frame` / `work_frame` / `media_kind`).
-- Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`, `arrangements`, `arrangement_active`, `arrangement_reversed`.
+- Focals keyed by **filename** (`focal_x`, `focal_y`, `original_width/height`, `auto_center`, `crop_scale`, `flip_h`, `flip_v`, `timestamp`; videos also `in_frame` / `out_frame` / `work_frame` / `media_kind` / `keyframes`). Legacy single-focal videos migrate to In/Out keyframes on load.
+- Top-level: `discarded`, `order` (filenames), `current_idx`, `alignment_mode`, `preview_state`, `_meta`, `arrangements`, `arrangement_active`, `arrangement_methods`, `arrangement_reversed`.
 - `load_focal_points()` re-applies `order` via `_reorder_files_by_names()`.
 - Thumbs/previews: `<input>/.fpa_cache/` keyed by **filename**, not index (reorder must not reuse the wrong JPEG). Media URLs should cache-bust with `?n=<filename>`.
-- `config.json` at repo root: opener prefs. Gitignored.
+- `config.json` at repo root: opener prefs (`mode`, paths, target size, `import_name_pattern`, etc.). Gitignored.
 
 ## Arrange / reorder invariants
 
@@ -137,16 +146,16 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Keyboard
 
-`Enter` save+next (Original) / commit draft (Preview when dirty) · `Space` skip · `←→` navigate (no wrap) · `X` / **Shift+MMB** discard · `D` duplicate (Original) · `Del` clear · `P` preview · `O` orientation · `A` arrange · `H` home focal+scale · `G` grid · `I` mask · `R` reset · `E` export · `Esc` opener / next batch · Preview `<` / `,` previous neighbor · `>` / `.` next neighbor (clamped) · Arrange `0`–`9` slots · `C` compare slots.
+`Enter` save+next (Original) / commit draft (Preview when dirty) · `Space` skip (Original) / play·pause (Preview video) · `←→` navigate (no wrap) · `X` / **Shift+MMB** discard · `D` duplicate (Original) · `Del` clear focal (images) / clear all keyframes (videos) · `P` preview · `O` orientation · `A` arrange · `H` home focal+scale · `G` grid · `I` mask · `R` reset · `E` export · `Esc` opener / next batch · Preview `<` / `,` previous neighbor · `>` / `.` next neighbor (clamped) · Arrange `0`–`6` slots · `C` compare slots.
 
-Hotkey chips are **tab-scoped**: Original shows save/duplicate/grid/mask/home; Preview shows Enter·Commit (when draft dirty and not comparing), Compare (C), and `<`/`>` neighbor; Arrange shows compare (and slot digits still work). Keys that are not shown for the current tab do nothing.
+Hotkey chips are **tab-scoped**: Original shows save/duplicate/grid/mask/home; Preview shows Enter·Commit (when draft dirty and not comparing), Space·Play/Pause (videos), Compare (C), and `<`/`>` neighbor; Arrange shows slot digits. Keys that are not shown for the current tab do nothing. Discard / Del / Reset use `.hotkey.danger` styling.
 Preview can toggle **Wrap** so ←→ loop the list; with Wrap off, navigation stops at the ends.
 
 Mouse on Original: left click/drag pending · wheel crop size · left double save+next · right click center pending · right double center save+next · Shift+middle discard · **H** home.
 
 Reorder only on the Arrange tab (drag thumbs); `[`/`]` are not global reorder shortcuts.
 
-Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip H/V · Compare / Commit (Enter) for fine-tune. Flips store `flip_h`/`flip_v` with the focal (preview draw transforms focal into flipped space and samples the unflipped bitmap). Pan/zoom bakes edge-forced magnification into `crop_scale` so returning to center keeps that zoom; `MIN_CROP_SCALE` is `0.05` (~20× vs base).
+Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip X (upside down) / Flip Y (left ↔ right) · Compare / Commit (Enter) for fine-tune. Stored as `flip_v` / `flip_h` respectively (axis of reflection). Preview draw transforms focal into flipped space and samples the unflipped bitmap. Pan/zoom bakes edge-forced magnification into `crop_scale` so returning to center keeps that zoom; `MIN_CROP_SCALE` is `0.05` (~20× vs base).
 
 ## Image-size framing (crop math)
 
@@ -190,8 +199,9 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip H/V �
 - `tests/test_core_io.py` — header probe, EXIF size, filename-keyed cache, confirm does not write full-res.
 - `tests/test_batch.py` — discovery, merge, move-aligned.
 - `tests/test_arrange_order.py` — discard → reorder → persist; **current_idx follows the file**.
-- `tests/test_presets_import_arrange.py` — size retarget, import SSE, AutoArrange SSE, reverse lit state.
+- `tests/test_presets_import_arrange.py` — size retarget, import SSE, list naming patterns, AutoArrange SSE, reverse lit state.
 - `tests/test_video_media.py` — mixed discovery, video JSON fields, frame extract, trim/split, MP4 export (skips when ffmpeg missing).
+- `tests/test_keyframes.py` — ease/lerp, keyframe seed/persist, trim clamp, AutoArrange uses `in_frame`, `.hap` extension.
 - Run: `./venv/bin/python -m pytest tests/ -v`
 
 ## Building

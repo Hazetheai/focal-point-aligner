@@ -57,6 +57,8 @@ export default function Opener({ onStart, onBatchSession }) {
   const [busy, setBusy] = useState(false)
   const [importDest, setImportDest] = useState('')
   const [importName, setImportName] = useState('imported')
+  const [importPrefix, setImportPrefix] = useState('image_urls--')
+  const [importSuffix, setImportSuffix] = useState('')
   const [importUrls, setImportUrls] = useState('')
   const [importFile, setImportFile] = useState('')
   const [importFolder, setImportFolder] = useState('')
@@ -70,6 +72,17 @@ export default function Opener({ onStart, onBatchSession }) {
     [importUrls],
   )
 
+  const importNamePattern = useMemo(
+    () => `${importPrefix}{name}${importSuffix}`,
+    [importPrefix, importSuffix],
+  )
+
+  const importNameExample = useMemo(() => {
+    const sample = 'cats'
+    const fileStem = importNamePattern.replace('{name}', sample)
+    return `${fileStem}.txt → ${sample}/`
+  }, [importNamePattern])
+
   useEffect(() => {
     api.prefs().then((p) => {
       setInput(p.last_input_dir || '')
@@ -81,6 +94,16 @@ export default function Opener({ onStart, onBatchSession }) {
       const root = p.last_batch_root_dir || ''
       setBatchRoot(root)
       setImportDest(root || '')
+      const pat = (p.import_name_pattern || 'image_urls--{name}').trim() || 'image_urls--{name}'
+      const token = '{name}'
+      const idx = pat.indexOf(token)
+      if (idx >= 0) {
+        setImportPrefix(pat.slice(0, idx))
+        setImportSuffix(pat.slice(idx + token.length))
+      } else {
+        setImportPrefix(pat)
+        setImportSuffix('')
+      }
       if (nextMode === 'batch' && root) loadBatch(root)
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -231,7 +254,7 @@ export default function Opener({ onStart, onBatchSession }) {
       setError('Choose a download destination folder')
       return
     }
-    const body = { dest: importDest, force: false }
+    const body = { dest: importDest, force: false, name_pattern: importNamePattern }
     if (importUrls.trim()) {
       body.name = importName.trim() || 'imported'
       body.urls = importUrls.split(/\n/).map((l) => l.trim()).filter((l) => /^https?:\/\//i.test(l))
@@ -250,6 +273,7 @@ export default function Opener({ onStart, onBatchSession }) {
     setBusy(true)
     setImportProgress({ phase: 'start', message: 'Starting download…', done: 0, total: 0 })
     try {
+      await api.savePrefs({ import_name_pattern: importNamePattern }).catch(() => {})
       const res = await api.importDownload(body)
       const report = await readSse(res, (ev) => {
         if (ev.phase === 'start') {
@@ -397,10 +421,31 @@ export default function Opener({ onStart, onBatchSession }) {
 
       {mode === 'import' && (
         <div className="card">
-          <p className="muted">Paste URLs, pick a URL list `.txt`, or a folder of lists. Downloads use `image_urls--name` folder naming, then opens Batch.</p>
+          <p className="muted">Paste URLs, pick a URL list `.txt`, or a folder of lists. List filenames are parsed with the pattern below into download folders, then Batch opens.</p>
           <div className="row" style={{ marginTop: 8 }}>
             <input className="grow" placeholder="Download destination" value={importDest} onChange={(e) => setImportDest(e.target.value)} />
             <button className="secondary" type="button" onClick={() => browse(setImportDest, 'Select download destination')}>Browse</button>
+          </div>
+          <div className="row import-pattern-row" style={{ marginTop: 12 }} title="Prefix/suffix around {name} in .txt list filenames">
+            <span className="muted import-pattern-heading">List naming</span>
+            <span className="import-pattern-fields">
+              <input
+                value={importPrefix}
+                onChange={(e) => setImportPrefix(e.target.value)}
+                placeholder="image_urls--"
+                aria-label="Filename prefix before folder name"
+              />
+              <span className="import-pattern-var" title="Captured as the download folder name">{'{name}'}</span>
+              <input
+                value={importSuffix}
+                onChange={(e) => setImportSuffix(e.target.value)}
+                placeholder=""
+                aria-label="Filename suffix after folder name"
+                style={{ minWidth: 72 }}
+              />
+              <span className="muted">.txt</span>
+            </span>
+            <span className="muted import-pattern-example">{importNameExample}</span>
           </div>
           <div className="row" style={{ marginTop: 12 }}>
             <input value={importName} onChange={(e) => setImportName(e.target.value)} placeholder="Folder name for pasted URLs" />

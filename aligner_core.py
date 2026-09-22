@@ -35,10 +35,13 @@ UPSCALE_CAP = 2.0       # unused legacy; kept for importers
 THUMB_MAX = 512
 CACHE_DIR_NAME = ".fpa_cache"
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
-VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm'}
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.webm', '.hap'}
 MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
 DEFAULT_CROP_SCALE = 1.0
+KEYFRAME_EASES = ('linear', 'ease-in', 'ease-out', 'ease-in-out')
+DEFAULT_KEYFRAME_EASE = 'ease-in-out'
 MIN_CROP_SCALE = 0.05   # zoom in vs base framing (~20×)
+ARRANGEMENT_SLOT_MAX = 6  # numeric presets 1…6 (plus original)
 MAX_CROP_SCALE = 8.0    # zoom out (clamped by image bounds)
 
 
@@ -277,7 +280,12 @@ def _transpose_hw(img):
 
 
 def apply_user_flips(img, flip_h=False, flip_v=False):
-    """Apply user horizontal/vertical flips to a BGR image (after EXIF)."""
+    """Apply user flips to a BGR image (after EXIF).
+
+    Naming matches axis of reflection (not "which way the image moves"):
+    - flip_v (Flip X in the UI): reflect across the X axis → upside down (top ↔ bottom)
+    - flip_h (Flip Y in the UI): reflect across the Y axis → mirror (left ↔ right)
+    """
     if img is None:
         return None
     flip_h = bool(flip_h)
@@ -292,7 +300,10 @@ def apply_user_flips(img, flip_h=False, flip_v=False):
 
 
 def transform_focal_for_flips(fx, fy, width, height, flip_h=False, flip_v=False):
-    """Map a focal from unflipped EXIF space into flipped image space."""
+    """Map a focal from unflipped EXIF space into flipped image space.
+
+    flip_h = Flip Y (left ↔ right); flip_v = Flip X (upside down).
+    """
     fx = float(fx)
     fy = float(fy)
     if flip_h:
@@ -483,47 +494,131 @@ def probe_image_size(img_path):
     return (meta["width"], meta["height"])
 
 
+def probe_video_meta_ffmpeg(video_path):
+    """Probe video via ffprobe (needed for HAP and other OpenCV-hostile codecs)."""
+    if not shutil.which("ffprobe"):
+        return None
+    path = Path(video_path)
+    try:
+        nbytes = path.stat().st_size if path.exists() else 0
+    except OSError:
+        nbytes = 0
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate,nb_frames,duration,codec_name",
+        "-show_entries", "format=duration",
+        "-of", "json",
+        str(path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    try:
+        payload = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    streams = payload.get("streams") or []
+    if not streams:
+        return None
+    stream = streams[0]
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    if width <= 0 or height <= 0:
+        return None
+    fps = 30.0
+    rate = stream.get("r_frame_rate") or "30/1"
+    try:
+        if "/" in str(rate):
+            num, den = str(rate).split("/", 1)
+            den_f = float(den) or 1.0
+            fps = float(num) / den_f
+        else:
+            fps = float(rate)
+    except (TypeError, ValueError, ZeroDivisionError):
+        fps = 30.0
+    if not math.isfinite(fps) or fps <= 0:
+        fps = 30.0
+    frame_count = 0
+    try:
+        frame_count = int(stream.get("nb_frames") or 0)
+    except (TypeError, ValueError):
+        frame_count = 0
+    duration = None
+    for src in (stream.get("duration"), (payload.get("format") or {}).get("duration")):
+        try:
+            if src is not None:
+                duration = float(src)
+                break
+        except (TypeError, ValueError):
+            continue
+    if frame_count <= 0 and duration and duration > 0:
+        frame_count = max(1, int(round(duration * fps)))
+    if frame_count <= 0:
+        frame_count = 1
+    duration_ms = int(round(1000.0 * frame_count / fps)) if fps > 0 else 0
+    codec = (stream.get("codec_name") or path.suffix.lstrip(".") or "mp4").lower()
+    return {
+        "width": int(width),
+        "height": int(height),
+        "bytes": nbytes,
+        "format": codec,
+        "mode": "video",
+        "dpi": None,
+        "orientation": 1,
+        "media_kind": "video",
+        "fps": float(fps),
+        "frame_count": int(frame_count),
+        "duration_ms": duration_ms,
+        "decoder": "ffmpeg",
+    }
+
+
 def probe_video_meta(video_path):
-    """Probe a video with OpenCV: width, height, fps, frame_count, duration_ms."""
+    """Probe a video with OpenCV, falling back to ffprobe for HAP / unsupported codecs."""
     path = Path(video_path)
     try:
         nbytes = path.stat().st_size if path.exists() else 0
     except OSError:
         nbytes = 0
     cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        return None
-    try:
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        if width <= 0 or height <= 0:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                return None
-            height, width = frame.shape[:2]
-            frame_count = max(frame_count, 1)
-        if frame_count <= 0:
-            frame_count = 1
-        if not math.isfinite(fps) or fps <= 0:
-            fps = 30.0
-        duration_ms = int(round(1000.0 * frame_count / fps)) if fps > 0 else 0
-        return {
-            "width": int(width),
-            "height": int(height),
-            "bytes": nbytes,
-            "format": (path.suffix.lstrip(".") or "mp4").lower(),
-            "mode": "video",
-            "dpi": None,
-            "orientation": 1,
-            "media_kind": "video",
-            "fps": float(fps),
-            "frame_count": int(frame_count),
-            "duration_ms": int(duration_ms),
-        }
-    finally:
-        cap.release()
+    if cap.isOpened():
+        try:
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if width <= 0 or height <= 0:
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    height, width = frame.shape[:2]
+                    frame_count = max(frame_count, 1)
+            if width > 0 and height > 0:
+                if frame_count <= 0:
+                    frame_count = 1
+                if not math.isfinite(fps) or fps <= 0:
+                    fps = 30.0
+                duration_ms = int(round(1000.0 * frame_count / fps)) if fps > 0 else 0
+                return {
+                    "width": int(width),
+                    "height": int(height),
+                    "bytes": nbytes,
+                    "format": (path.suffix.lstrip(".") or "mp4").lower(),
+                    "mode": "video",
+                    "dpi": None,
+                    "orientation": 1,
+                    "media_kind": "video",
+                    "fps": float(fps),
+                    "frame_count": int(frame_count),
+                    "duration_ms": int(duration_ms),
+                    "decoder": "opencv",
+                }
+        finally:
+            cap.release()
+    return probe_video_meta_ffmpeg(video_path)
 
 
 def probe_media_meta(path):
@@ -540,30 +635,90 @@ def probe_media_meta(path):
     return None
 
 
+def extract_video_frame_ffmpeg(path, frame_idx, fps=None, width=None, height=None) -> Optional[np.ndarray]:
+    """Decode a single frame with ffmpeg (HAP-safe). Returns BGR uint8 or None."""
+    if not ffmpeg_available():
+        return None
+    path = Path(path)
+    frame_idx = max(0, int(frame_idx))
+
+    def _run(c):
+        try:
+            return subprocess.run(c, capture_output=True, check=False)
+        except OSError:
+            return None
+
+    meta = None
+    if fps is None or not width or not height:
+        meta = probe_video_meta_ffmpeg(path) or {}
+        fps = float(fps or meta.get("fps") or 30.0)
+        width = int(width or meta.get("width") or 0)
+        height = int(height or meta.get("height") or 0)
+
+    if width > 0 and height > 0 and fps and fps > 0:
+        ss = frame_idx / fps
+        seek_cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-ss", f"{ss:.6f}",
+            "-i", str(path),
+            "-frames:v", "1",
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "pipe:1",
+        ]
+        proc = _run(seek_cmd)
+        if proc is not None and proc.returncode == 0 and proc.stdout:
+            expected = width * height * 3
+            if len(proc.stdout) >= expected:
+                arr = np.frombuffer(proc.stdout[:expected], dtype=np.uint8).reshape((height, width, 3))
+                return _to_uint8_bgr(arr.copy())
+
+    vf = f"select=eq(n\\,{frame_idx})"
+    jpg_cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(path),
+        "-vf", vf,
+        "-vframes", "1",
+        "-f", "image2pipe",
+        "-vcodec", "mjpeg",
+        "pipe:1",
+    ]
+    proc = _run(jpg_cmd)
+    if proc is None or proc.returncode != 0 or not proc.stdout:
+        return None
+    arr = np.frombuffer(proc.stdout, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+    return _to_uint8_bgr(img)
+
+
 def extract_video_frame(path, frame_idx) -> Optional[np.ndarray]:
-    """Return a single video frame as BGR uint8, or None on failure."""
+    """Return a single video frame as BGR uint8, or None on failure.
+
+    Tries OpenCV first; falls back to ffmpeg (required for HAP and similar codecs).
+    """
     path = Path(path)
     frame_idx = max(0, int(frame_idx))
     cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        return None
-    try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
-        ok, frame = cap.read()
-        if not ok or frame is None or frame.size == 0:
-            # Some backends fail seek; fall back to sequential read.
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            for i in range(frame_idx + 1):
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    return None
-                if i == frame_idx:
-                    break
-        if frame is None or frame.size == 0:
-            return None
-        return _to_uint8_bgr(frame)
-    finally:
-        cap.release()
+    if cap.isOpened():
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
+            ok, frame = cap.read()
+            if not ok or frame is None or frame.size == 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                for i in range(frame_idx + 1):
+                    ok, frame = cap.read()
+                    if not ok or frame is None:
+                        frame = None
+                        break
+                    if i == frame_idx:
+                        break
+            if frame is not None and frame.size > 0:
+                return _to_uint8_bgr(frame)
+        finally:
+            cap.release()
+    return extract_video_frame_ffmpeg(path, frame_idx)
 
 
 def default_video_range(frame_count: int):
@@ -573,6 +728,83 @@ def default_video_range(frame_count: int):
     out_f = n - 1
     work_f = n // 2
     return in_f, out_f, work_f
+
+
+def normalize_ease(ease) -> str:
+    e = str(ease or DEFAULT_KEYFRAME_EASE).lower().strip()
+    return e if e in KEYFRAME_EASES else DEFAULT_KEYFRAME_EASE
+
+
+def apply_ease(t: float, ease: str = DEFAULT_KEYFRAME_EASE) -> float:
+    """Map linear t in [0,1] through a named ease curve."""
+    t = max(0.0, min(1.0, float(t)))
+    ease = normalize_ease(ease)
+    if ease == "linear":
+        return t
+    if ease == "ease-in":
+        return t * t
+    if ease == "ease-out":
+        return 1.0 - (1.0 - t) * (1.0 - t)
+    if t < 0.5:
+        return 2.0 * t * t
+    return 1.0 - ((-2.0 * t + 2.0) ** 2) / 2.0
+
+
+def _normalize_keyframe(kf, in_f=None, out_f=None) -> Optional[dict]:
+    if not isinstance(kf, dict):
+        return None
+    try:
+        frame = int(kf.get("frame"))
+        fx = float(kf.get("focal_x"))
+        fy = float(kf.get("focal_y"))
+    except (TypeError, ValueError):
+        return None
+    if in_f is not None and out_f is not None:
+        if frame < int(in_f) or frame > int(out_f):
+            return None
+    return {
+        "frame": frame,
+        "focal_x": fx,
+        "focal_y": fy,
+        "crop_scale": clamp_crop_scale(kf.get("crop_scale", DEFAULT_CROP_SCALE)),
+        "ease": normalize_ease(kf.get("ease")),
+    }
+
+
+def normalize_keyframes(raw, in_f=None, out_f=None) -> list:
+    """Dedupe by frame (last wins), clamp to [in,out], sort ascending."""
+    by_frame = {}
+    for item in raw or []:
+        kf = _normalize_keyframe(item, in_f=in_f, out_f=out_f)
+        if kf is None:
+            continue
+        by_frame[kf["frame"]] = kf
+    return [by_frame[f] for f in sorted(by_frame)]
+
+
+def interpolate_from_keyframes(keyframes, frame) -> Optional[tuple]:
+    """Return (fx, fy, crop_scale) at frame, or None if no keyframes."""
+    kfs = normalize_keyframes(keyframes)
+    if not kfs:
+        return None
+    frame = int(frame)
+    if frame <= kfs[0]["frame"]:
+        k = kfs[0]
+        return (k["focal_x"], k["focal_y"], k["crop_scale"])
+    if frame >= kfs[-1]["frame"]:
+        k = kfs[-1]
+        return (k["focal_x"], k["focal_y"], k["crop_scale"])
+    for i in range(len(kfs) - 1):
+        a, b = kfs[i], kfs[i + 1]
+        if a["frame"] <= frame <= b["frame"]:
+            span = max(1, b["frame"] - a["frame"])
+            t = apply_ease((frame - a["frame"]) / span, a.get("ease"))
+            fx = a["focal_x"] + (b["focal_x"] - a["focal_x"]) * t
+            fy = a["focal_y"] + (b["focal_y"] - a["focal_y"]) * t
+            cs = a["crop_scale"] + (b["crop_scale"] - a["crop_scale"]) * t
+            return (fx, fy, clamp_crop_scale(cs))
+    k = kfs[-1]
+    return (k["focal_x"], k["focal_y"], k["crop_scale"])
 
 
 class FocalPointAlignerCore:
@@ -650,6 +882,7 @@ class FocalPointAlignerCore:
         self.in_frames = {}
         self.out_frames = {}
         self.work_frames = {}
+        self.keyframes = {}  # idx -> list[{frame, focal_x, focal_y, crop_scale, ease}]
         self._validate_and_discard_images()
         
         if not self.image_files:
@@ -671,6 +904,7 @@ class FocalPointAlignerCore:
         self.arrangements = {}
         self.arrangement_active = "original"
         self.arrangement_reversed = {}  # slot -> bool (Reverse button lit state)
+        self.arrangement_methods = {}  # slot -> "color"|"depth"|"lead"|"faces"|"manual"
         self._arrange_draft = None  # pending manual order while on Arrange tab
         
         self.load_focal_points()
@@ -679,6 +913,8 @@ class FocalPointAlignerCore:
         if "original" not in self.arrangements:
             self.arrangements["original"] = [f.name for f in self.image_files]
             self.arrangement_active = "original"
+        else:
+            self._sync_arrangements_with_files()
         
         if self.image_files:
             for idx, img_file in enumerate(self.image_files):
@@ -696,6 +932,22 @@ class FocalPointAlignerCore:
 
     def media_kind(self, idx) -> str:
         return "video" if self.is_video(idx) else "image"
+
+    def _sync_arrangements_with_files(self):
+        """Append newly discovered files (e.g. videos) into arrangement slots.
+
+        Persisted `order` / `arrangements.original` from an images-only session
+        must pick up media added later without dropping the saved order.
+        """
+        names = [f.name for f in self.image_files]
+        name_set = set(names)
+        for slot, slot_names in list(self.arrangements.items()):
+            if not isinstance(slot_names, list):
+                continue
+            kept = [n for n in slot_names if n in name_set]
+            missing = [n for n in names if n not in kept]
+            if missing or len(kept) != len(slot_names):
+                self.arrangements[slot] = kept + missing
 
     def _ensure_video_ranges(self):
         """Fill/clamp in/out/work frames for every video; re-probe if needed."""
@@ -780,8 +1032,10 @@ class FocalPointAlignerCore:
         self._ensure_video_ranges()
         n = int(self.video_meta.get(idx, {}).get("frame_count") or 1)
         n = max(1, n)
-        cur_in = int(self.in_frames.get(idx, 0))
-        cur_out = int(self.out_frames.get(idx, n - 1))
+        old_in = int(self.in_frames.get(idx, 0))
+        old_out = int(self.out_frames.get(idx, n - 1))
+        cur_in = old_in
+        cur_out = old_out
         cur_work = int(self.work_frames.get(idx, cur_in))
         if in_frame is not None:
             cur_in = max(0, min(int(in_frame), n - 1))
@@ -796,8 +1050,12 @@ class FocalPointAlignerCore:
         self.in_frames[idx] = cur_in
         self.out_frames[idx] = cur_out
         self.work_frames[idx] = cur_work
+        self._clamp_keyframes_to_trim(idx, old_in=old_in, old_out=old_out)
+        # Always refresh display focal from keyframes when seeking / trimming so
+        # the UI shows that frame's focal — not the last-saved top-level point.
+        if self.keyframes_for(idx):
+            self._sync_display_focal_from_keyframes(idx)
         if prev_work != cur_work:
-            # Work-frame change invalidates thumb / preview for this clip.
             thumb = self.thumb_path(self.image_files[idx])
             if thumb.exists():
                 try:
@@ -805,6 +1063,276 @@ class FocalPointAlignerCore:
                 except OSError:
                     pass
             self.preview_dirty.add(idx)
+        self.save_focal_points()
+        return True
+
+
+    def _trim_bounds(self, idx):
+        n = max(1, int(self.video_meta.get(idx, {}).get("frame_count") or 1))
+        din, dout, _ = default_video_range(n)
+        in_f = int(self.in_frames.get(idx, din))
+        out_f = int(self.out_frames.get(idx, dout))
+        return in_f, out_f
+
+    def keyframes_for(self, idx) -> list:
+        if not self.is_video(idx):
+            return []
+        in_f, out_f = self._trim_bounds(idx)
+        return normalize_keyframes(self.keyframes.get(idx) or [], in_f=in_f, out_f=out_f)
+
+    def interpolate_focal_at(self, idx, frame=None):
+        """Return (fx, fy, crop_scale) at frame for videos with keyframes.
+
+        Falls back to stored focal + crop_scale, then image center.
+        """
+        self._ensure_dims(idx)
+        dims = self.image_dimensions.get(idx, (0, 0))
+        w, h = dims[0] or 0, dims[1] or 0
+        if frame is None:
+            frame = self.work_frame_for(idx) if self.is_video(idx) else 0
+        kfs = self.keyframes_for(idx) if self.is_video(idx) else []
+        if kfs:
+            got = interpolate_from_keyframes(kfs, frame)
+            if got is not None:
+                return got
+        if idx in self.focal_points:
+            fx, fy = self.focal_points[idx]
+            return (float(fx), float(fy), clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE)))
+        return (w / 2.0, h / 2.0, clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE)))
+
+    def _sync_display_focal_from_keyframes(self, idx):
+        """Keep top-level focal/crop_scale aligned with work_frame interpolation."""
+        if not self.is_video(idx):
+            return
+        kfs = self.keyframes_for(idx)
+        if not kfs:
+            return
+        fx, fy, cs = self.interpolate_focal_at(idx, self.work_frame_for(idx))
+        self.focal_points[idx] = (fx, fy)
+        self.crop_scales[idx] = cs
+        self.completed.add(idx)
+
+    def _ensure_endpoint_keyframes(self, idx, fx, fy, crop_scale, ease=None):
+        """Guarantee In and Out keyframes exist (copying fx/fy/scale when creating)."""
+        if not self.is_video(idx):
+            return
+        in_f, out_f = self._trim_bounds(idx)
+        ease = normalize_ease(ease)
+        cs = clamp_crop_scale(crop_scale)
+        by_frame = {k["frame"]: dict(k) for k in self.keyframes_for(idx)}
+        if in_f not in by_frame:
+            by_frame[in_f] = {
+                "frame": in_f, "focal_x": float(fx), "focal_y": float(fy),
+                "crop_scale": cs, "ease": ease,
+            }
+        if out_f not in by_frame:
+            by_frame[out_f] = {
+                "frame": out_f, "focal_x": float(fx), "focal_y": float(fy),
+                "crop_scale": cs, "ease": ease,
+            }
+        self.keyframes[idx] = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+
+    def _clamp_keyframes_to_trim(self, idx, old_in=None, old_out=None):
+        """Keep keyframes inside [in,out]; move endpoint KFs with the trim handles."""
+        if not self.keyframes.get(idx):
+            return
+        in_f, out_f = self._trim_bounds(idx)
+        raw = list(self.keyframes.get(idx) or [])
+        if not raw:
+            self.keyframes.pop(idx, None)
+            return
+        by_frame = {}
+        for item in raw:
+            kf = _normalize_keyframe(item, in_f=None, out_f=None)
+            if kf is None:
+                continue
+            fr = kf["frame"]
+            # Remap former endpoints onto the new In/Out.
+            if old_in is not None and fr == int(old_in):
+                fr = in_f
+            elif old_out is not None and fr == int(old_out):
+                fr = out_f
+            if fr < in_f or fr > out_f:
+                continue
+            kf = dict(kf)
+            kf["frame"] = fr
+            by_frame[fr] = kf
+        # Guarantee In/Out endpoint keyframes when any keyframes remain (or after remap).
+        if by_frame:
+            seed = next(iter(by_frame.values()))
+            if in_f not in by_frame:
+                by_frame[in_f] = {
+                    "frame": in_f,
+                    "focal_x": seed["focal_x"],
+                    "focal_y": seed["focal_y"],
+                    "crop_scale": seed["crop_scale"],
+                    "ease": seed["ease"],
+                }
+            if out_f not in by_frame:
+                seed_out = by_frame.get(max(by_frame.keys()), seed)
+                by_frame[out_f] = {
+                    "frame": out_f,
+                    "focal_x": seed_out["focal_x"],
+                    "focal_y": seed_out["focal_y"],
+                    "crop_scale": seed_out["crop_scale"],
+                    "ease": seed_out["ease"],
+                }
+        self.keyframes[idx] = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+        if not self.keyframes[idx]:
+            self.keyframes.pop(idx, None)
+
+    def add_or_update_keyframe(self, idx, frame, focal_x, focal_y, crop_scale=None, ease=None, create=True):
+        """Upsert a keyframe at frame.
+
+        create=False updates an existing keyframe only (no new mid markers).
+        In/Out endpoints are seeded when the clip has no keyframes yet.
+        """
+        if not self.is_video(idx):
+            return False
+        self._ensure_dims(idx)
+        in_f, out_f = self._trim_bounds(idx)
+        frame = max(in_f, min(out_f, int(frame)))
+        cs = clamp_crop_scale(
+            crop_scale if crop_scale is not None
+            else self.crop_scales.get(idx, DEFAULT_CROP_SCALE)
+        )
+        fx, fy = float(focal_x), float(focal_y)
+        ease_v = normalize_ease(ease) if ease is not None else DEFAULT_KEYFRAME_EASE
+        existing = self.keyframes_for(idx)
+        by_frame = {k["frame"]: dict(k) for k in existing}
+
+        if not existing:
+            by_frame[in_f] = {
+                "frame": in_f, "focal_x": fx, "focal_y": fy,
+                "crop_scale": cs, "ease": ease_v,
+            }
+            by_frame[out_f] = {
+                "frame": out_f, "focal_x": fx, "focal_y": fy,
+                "crop_scale": cs, "ease": ease_v,
+            }
+            if create and frame not in (in_f, out_f):
+                by_frame[frame] = {
+                    "frame": frame, "focal_x": fx, "focal_y": fy,
+                    "crop_scale": cs, "ease": ease_v,
+                }
+            self.keyframes[idx] = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+        else:
+            if frame not in by_frame and not create and frame not in (in_f, out_f):
+                # Focal save without inventing a mid keyframe.
+                self.focal_points[idx] = (fx, fy)
+                self.crop_scales[idx] = cs
+                self.completed.add(idx)
+                self.save_focal_points()
+                return True
+            prev = by_frame.get(frame) or {}
+            by_frame[frame] = {
+                "frame": frame,
+                "focal_x": fx,
+                "focal_y": fy,
+                "crop_scale": cs,
+                "ease": normalize_ease(ease if ease is not None else prev.get("ease", ease_v)),
+            }
+            if in_f not in by_frame:
+                seed = by_frame[min(by_frame.keys())]
+                by_frame[in_f] = {
+                    "frame": in_f, "focal_x": seed["focal_x"], "focal_y": seed["focal_y"],
+                    "crop_scale": seed["crop_scale"], "ease": seed["ease"],
+                }
+            if out_f not in by_frame:
+                seed = by_frame[max(by_frame.keys())]
+                by_frame[out_f] = {
+                    "frame": out_f, "focal_x": seed["focal_x"], "focal_y": seed["focal_y"],
+                    "crop_scale": seed["crop_scale"], "ease": seed["ease"],
+                }
+            self.keyframes[idx] = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+
+        self.focal_points[idx] = (fx, fy)
+        self.crop_scales[idx] = cs
+        self.completed.add(idx)
+        self.work_frames[idx] = frame
+        self.preview_dirty.add(idx)
+        self.save_focal_points()
+        return True
+
+    def set_keyframe_ease(self, idx, frame, ease):
+        if not self.is_video(idx):
+            return False
+        in_f, out_f = self._trim_bounds(idx)
+        frame = int(frame)
+        by_frame = {k["frame"]: dict(k) for k in self.keyframes_for(idx)}
+        if frame not in by_frame:
+            return False
+        by_frame[frame]["ease"] = normalize_ease(ease)
+        self.keyframes[idx] = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+        self.save_focal_points()
+        return True
+
+    def move_keyframe(self, idx, from_frame, to_frame):
+        """Retimed mid keyframes only — In/Out stay tied to the trim handles."""
+        if not self.is_video(idx):
+            return False
+        in_f, out_f = self._trim_bounds(idx)
+        from_frame = int(from_frame)
+        if from_frame == in_f or from_frame == out_f:
+            return False
+        to_frame = max(in_f + 1 if out_f > in_f else in_f, min(out_f - 1 if out_f > in_f else out_f, int(to_frame)))
+        by_frame = {k["frame"]: dict(k) for k in self.keyframes_for(idx)}
+        if from_frame not in by_frame:
+            return False
+        frames = sorted(by_frame.keys())
+        pos = frames.index(from_frame)
+        lo = frames[pos - 1] + 1 if pos > 0 else in_f + 1
+        hi = frames[pos + 1] - 1 if pos < len(frames) - 1 else out_f - 1
+        if lo > hi:
+            return False
+        to_frame = max(lo, min(hi, to_frame))
+        kf = by_frame.pop(from_frame)
+        kf["frame"] = to_frame
+        by_frame[to_frame] = kf
+        self.keyframes[idx] = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+        if self.work_frames.get(idx) == from_frame:
+            self.work_frames[idx] = to_frame
+        self._sync_display_focal_from_keyframes(idx)
+        self.save_focal_points()
+        return True
+
+    def delete_keyframe(self, idx, frame):
+        """Delete a mid keyframe. In/Out endpoints cannot be deleted (they are the trim handles)."""
+        if not self.is_video(idx):
+            return False
+        in_f, out_f = self._trim_bounds(idx)
+        frame = int(frame)
+        if frame == in_f or frame == out_f:
+            return False
+        by_frame = {k["frame"]: dict(k) for k in self.keyframes_for(idx)}
+        if frame not in by_frame:
+            return False
+        del by_frame[frame]
+        remaining = normalize_keyframes(by_frame.values(), in_f=in_f, out_f=out_f)
+        if remaining:
+            if in_f not in {k["frame"] for k in remaining}:
+                seed = remaining[0]
+                remaining.insert(0, {
+                    "frame": in_f,
+                    "focal_x": seed["focal_x"],
+                    "focal_y": seed["focal_y"],
+                    "crop_scale": seed["crop_scale"],
+                    "ease": seed["ease"],
+                })
+            if out_f not in {k["frame"] for k in remaining}:
+                seed = remaining[-1]
+                remaining.append({
+                    "frame": out_f,
+                    "focal_x": seed["focal_x"],
+                    "focal_y": seed["focal_y"],
+                    "crop_scale": seed["crop_scale"],
+                    "ease": seed["ease"],
+                })
+            self.keyframes[idx] = normalize_keyframes(remaining, in_f=in_f, out_f=out_f)
+        else:
+            self.keyframes.pop(idx, None)
+        self._sync_display_focal_from_keyframes(idx)
+        self.preview_dirty.add(idx)
         self.save_focal_points()
         return True
 
@@ -895,6 +1423,7 @@ class FocalPointAlignerCore:
         self.in_frames = _insert_dict(self.in_frames, copy=False)
         self.out_frames = _insert_dict(self.out_frames, copy=False)
         self.work_frames = _insert_dict(self.work_frames, copy=False)
+        self.keyframes = _insert_dict(self.keyframes, copy=False)
         self.video_meta = _insert_dict(self.video_meta, copy=False)
         self.completed = _insert_set(self.completed)
         self.preview_dirty = _insert_set(self.preview_dirty)
@@ -970,6 +1499,13 @@ class FocalPointAlignerCore:
                     self.arrangement_reversed = {
                         str(k): bool(v) for k, v in data["arrangement_reversed"].items()
                     }
+                if "arrangement_methods" in data and isinstance(data["arrangement_methods"], dict):
+                    allowed = {"color", "depth", "lead", "faces", "manual"}
+                    self.arrangement_methods = {
+                        str(k): str(v)
+                        for k, v in data["arrangement_methods"].items()
+                        if str(v) in allowed
+                    }
 
                 if "current_idx" in data:
                     self.current_idx = data["current_idx"]
@@ -978,7 +1514,7 @@ class FocalPointAlignerCore:
                 skip_keys = {
                     "alignment_mode", "preview_state", "discarded", "current_idx",
                     "order", "_meta", "arrangements", "arrangement_active",
-                    "arrangement_reversed",
+                    "arrangement_reversed", "arrangement_methods",
                 }
                 focal_data = {k: v for k, v in data.items() if k not in skip_keys}
                 
@@ -1011,6 +1547,25 @@ class FocalPointAlignerCore:
                                     self.out_frames[idx] = int(coords["out_frame"])
                                 if "work_frame" in coords:
                                     self.work_frames[idx] = int(coords["work_frame"])
+                                if "keyframes" in coords and isinstance(coords["keyframes"], list):
+                                    self.keyframes[idx] = normalize_keyframes(coords["keyframes"])
+                                elif has_focal and is_video_path(img_file):
+                                    # Migrate legacy single focal → In/Out keyframes at work or mid.
+                                    fx, fy = self.focal_points[idx]
+                                    cs = clamp_crop_scale(self.crop_scales.get(idx, DEFAULT_CROP_SCALE))
+                                    n = int(coords.get("frame_count") or 1)
+                                    din, dout, dwork = default_video_range(n)
+                                    in_f = int(coords.get("in_frame", din))
+                                    out_f = int(coords.get("out_frame", dout))
+                                    work = int(coords.get("work_frame", dwork))
+                                    work = max(in_f, min(out_f, work))
+                                    seed = [
+                                        {"frame": in_f, "focal_x": fx, "focal_y": fy, "crop_scale": cs, "ease": DEFAULT_KEYFRAME_EASE},
+                                        {"frame": out_f, "focal_x": fx, "focal_y": fy, "crop_scale": cs, "ease": DEFAULT_KEYFRAME_EASE},
+                                    ]
+                                    if work not in (in_f, out_f):
+                                        seed.append({"frame": work, "focal_x": fx, "focal_y": fy, "crop_scale": cs, "ease": DEFAULT_KEYFRAME_EASE})
+                                    self.keyframes[idx] = normalize_keyframes(seed, in_f=in_f, out_f=out_f)
                             elif isinstance(coords, list) and len(coords) >= 4:
                                 self.focal_points[idx] = (coords[0], coords[1])
                                 self.image_dimensions[idx] = (coords[2], coords[3])
@@ -1077,6 +1632,7 @@ class FocalPointAlignerCore:
         new_in = {}
         new_out = {}
         new_work = {}
+        new_keyframes = {}
         new_vmeta = {}
         for new_idx, img_file in enumerate(ordered):
             old_idx = old_name_to_idx[img_file.name]
@@ -1100,6 +1656,8 @@ class FocalPointAlignerCore:
                 new_out[new_idx] = self.out_frames[old_idx]
             if old_idx in self.work_frames:
                 new_work[new_idx] = self.work_frames[old_idx]
+            if old_idx in self.keyframes:
+                new_keyframes[new_idx] = list(self.keyframes[old_idx])
             if old_idx in self.video_meta:
                 new_vmeta[new_idx] = self.video_meta[old_idx]
         
@@ -1114,6 +1672,7 @@ class FocalPointAlignerCore:
         self.in_frames = new_in
         self.out_frames = new_out
         self.work_frames = new_work
+        self.keyframes = new_keyframes
         self.video_meta = new_vmeta
         logger.info(f"[ALIGNER _reorder_files_by_names] Reordered to {[f.name[:20] for f in ordered[:5]]}...")
     
@@ -1187,6 +1746,7 @@ class FocalPointAlignerCore:
                 del self.auto_center_flags[idx]
             if idx in self.crop_scales:
                 del self.crop_scales[idx]
+            self.keyframes.pop(idx, None)
             self.flip_h.pop(idx, None)
             self.flip_v.pop(idx, None)
         
@@ -1233,6 +1793,9 @@ class FocalPointAlignerCore:
                 entry["work_frame"] = int(self.work_frames.get(idx, dwork))
                 entry["fps"] = float(self.video_meta.get(idx, {}).get("fps") or 30.0)
                 entry["frame_count"] = n
+                kfs = self.keyframes_for(idx)
+                if kfs:
+                    entry["keyframes"] = kfs
             data[filename] = entry
         
         if self.alignment_mode:
@@ -1251,6 +1814,10 @@ class FocalPointAlignerCore:
         if self.arrangement_reversed:
             data["arrangement_reversed"] = {
                 k: bool(v) for k, v in self.arrangement_reversed.items() if v
+            }
+        if self.arrangement_methods:
+            data["arrangement_methods"] = {
+                k: str(v) for k, v in self.arrangement_methods.items() if v
             }
         
         try:
@@ -1307,15 +1874,20 @@ class FocalPointAlignerCore:
             self.save_focal_points()
         return ok
 
-    def save_arrangement_slot(self, slot: str, names=None):
+    def save_arrangement_slot(self, slot: str, names=None, method=None):
         slot = str(slot)
         if slot == "0":
             slot = "original"
-        if slot != "original" and slot not in {str(i) for i in range(1, 10)}:
+        valid_numeric = {str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)}
+        if slot != "original" and slot not in valid_numeric:
             return False
         self.arrangements[slot] = list(names if names is not None else self.current_order_names())
         self.arrangement_active = slot
         self.arrangement_reversed[slot] = False
+        if method:
+            self.arrangement_methods[slot] = str(method)
+        elif method is None and slot != "original" and slot not in self.arrangement_methods:
+            self.arrangement_methods[slot] = "manual"
         self._arrange_draft = None
         self.save_focal_points()
         return True
@@ -1340,28 +1912,33 @@ class FocalPointAlignerCore:
         return True
 
     def commit_arrange_draft_to_next_slot(self):
-        """When leaving Arrange, batch manual edits into the next free 1-9 slot."""
+        """When leaving Arrange, batch manual edits into the next free 1–N slot."""
         if not self._arrange_draft:
             return None
         names = self.current_order_names()
         if names == self.arrangements.get(self.arrangement_active):
             self._arrange_draft = None
             return None
+        valid_numeric = {str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)}
         # Prefer overwrite active numeric slot, else next free, else slot 1
         active = self.arrangement_active
-        if active in {str(i) for i in range(1, 10)}:
+        if active in valid_numeric:
             slot = active
         else:
-            slot = next((str(i) for i in range(1, 10) if str(i) not in self.arrangements), "1")
-        self.save_arrangement_slot(slot, names)
+            slot = next(
+                (str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1) if str(i) not in self.arrangements),
+                "1",
+            )
+        self.save_arrangement_slot(slot, names, method="manual")
         return slot
 
     def auto_arrange(self, mode: str, options: Optional[dict] = None, progress_callback=None):
         """Run an AutoArrange mode and save into a slot. Returns (ok, slot|error)."""
         options = options or {}
         paths = list(self.image_files)
+        # AutoArrange samples the trim start (in_frame), not the work playhead.
         frame_indices = [
-            self.work_frame_for(i) if self.is_video(i) else None
+            int(self.in_frames.get(i, 0)) if self.is_video(i) else None
             for i in range(len(paths))
         ]
         from arrange_auto import (
@@ -1400,10 +1977,14 @@ class FocalPointAlignerCore:
         if not self.apply_arrange_order(order, mark_draft=False):
             return False, "apply_arrange_order failed"
         slot = str(options.get("slot") or next(
-            (str(i) for i in range(1, 10) if str(i) not in self.arrangements), "1"
+            (
+                str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)
+                if str(i) not in self.arrangements
+            ),
+            "1",
         ))
-        self.save_arrangement_slot(slot)
-        return True, {"slot": slot, "labels": labels}
+        self.save_arrangement_slot(slot, method=mode)
+        return True, {"slot": slot, "labels": labels, "method": mode}
     
     def delete_focal_points_file(self):
         """Delete the focal points JSON file."""
@@ -1477,7 +2058,13 @@ class FocalPointAlignerCore:
         self.in_frames = _insert_dict(self.in_frames)
         self.out_frames = _insert_dict(self.out_frames)
         self.work_frames = _insert_dict(self.work_frames)
+        self.keyframes = _insert_dict(self.keyframes)
+        # Independent copies so editing one clip's keyframes does not mutate the other.
+        if insert_at in self.keyframes and isinstance(self.keyframes[insert_at], list):
+            self.keyframes[insert_at] = [dict(k) for k in self.keyframes[insert_at]]
         self.video_meta = _insert_dict(self.video_meta)
+        if insert_at in self.video_meta and isinstance(self.video_meta[insert_at], dict):
+            self.video_meta[insert_at] = dict(self.video_meta[insert_at])
         self.completed = _insert_set(self.completed)
         self.preview_dirty = _insert_set(self.preview_dirty)
         self.preview_dirty.add(insert_at)
@@ -1659,6 +2246,7 @@ class FocalPointAlignerCore:
                     "in_frame": int(self.in_frames.get(i, din)),
                     "out_frame": int(self.out_frames.get(i, dout)),
                     "work_frame": int(self.work_frames.get(i, dwork)),
+                    "keyframes": self.keyframes_for(i),
                 })
             images.append(entry)
         return {
@@ -1680,7 +2268,10 @@ class FocalPointAlignerCore:
             "arrangement_reversed": bool(
                 (self.arrangement_reversed or {}).get(self.arrangement_active or "original", False)
             ),
-            "arrangement_slots": ["original"] + [str(i) for i in range(1, 10)],
+            "arrangement_methods": {
+                k: str(v) for k, v in (self.arrangement_methods or {}).items() if v
+            },
+            "arrangement_slots": ["original"] + [str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)],
             "ffmpeg_available": ffmpeg_available(),
         }
 
@@ -1807,27 +2398,40 @@ class FocalPointAlignerCore:
             return cv2.imread(str(preview_path))
         return None
     
-    def set_focal_point(self, x, y, auto_center=False, crop_scale=None, flip_h=None, flip_v=None):
-        """Set focal point for current image (in original image coordinates)."""
+    def set_focal_point(self, x, y, auto_center=False, crop_scale=None, flip_h=None, flip_v=None, keyframe_frame=None):
+        """Set focal point for current image (in original image coordinates).
+
+        For videos, also upserts a keyframe at keyframe_frame (or work_frame) and
+        ensures In/Out endpoints exist on first set.
+        """
         self._ensure_dims(self.current_idx)
+        idx = self.current_idx
         
-        self.focal_points[self.current_idx] = (float(x), float(y))
-        self.auto_center_flags[self.current_idx] = auto_center
+        self.focal_points[idx] = (float(x), float(y))
+        self.auto_center_flags[idx] = auto_center
         if crop_scale is not None:
-            self.crop_scales[self.current_idx] = clamp_crop_scale(crop_scale)
-        elif self.current_idx not in self.crop_scales:
-            self.crop_scales[self.current_idx] = DEFAULT_CROP_SCALE
+            self.crop_scales[idx] = clamp_crop_scale(crop_scale)
+        elif idx not in self.crop_scales:
+            self.crop_scales[idx] = DEFAULT_CROP_SCALE
         if flip_h is not None:
             if flip_h:
-                self.flip_h[self.current_idx] = True
+                self.flip_h[idx] = True
             else:
-                self.flip_h.pop(self.current_idx, None)
+                self.flip_h.pop(idx, None)
         if flip_v is not None:
             if flip_v:
-                self.flip_v[self.current_idx] = True
+                self.flip_v[idx] = True
             else:
-                self.flip_v.pop(self.current_idx, None)
-        self.completed.add(self.current_idx)
+                self.flip_v.pop(idx, None)
+        self.completed.add(idx)
+        if self.is_video(idx):
+            frame = self.work_frame_for(idx) if keyframe_frame is None else int(keyframe_frame)
+            # Any focal edit writes/updates the keyframe at this frame.
+            self.add_or_update_keyframe(
+                idx, frame, float(x), float(y),
+                crop_scale=self.crop_scales.get(idx, DEFAULT_CROP_SCALE),
+                create=True,
+            )
         
         with self._preview_generation_lock:
             self.preview_dirty.add(self.current_idx)
@@ -1842,15 +2446,22 @@ class FocalPointAlignerCore:
         thread.start()
     
     def clear_focal_point(self):
-        """Clear focal point for current image."""
-        if self.current_idx in self.focal_points:
-            del self.focal_points[self.current_idx]
-        if self.current_idx in self.auto_center_flags:
-            del self.auto_center_flags[self.current_idx]
-        if self.current_idx in self.crop_scales:
-            del self.crop_scales[self.current_idx]
-        if self.current_idx in self.completed:
-            self.completed.remove(self.current_idx)
+        """Clear focal point for current image.
+
+        For videos, also removes all keyframes (In/Out mid markers alike).
+        """
+        idx = self.current_idx
+        if idx in self.focal_points:
+            del self.focal_points[idx]
+        if idx in self.auto_center_flags:
+            del self.auto_center_flags[idx]
+        if idx in self.crop_scales:
+            del self.crop_scales[idx]
+        self.keyframes.pop(idx, None)
+        if idx in self.completed:
+            self.completed.remove(idx)
+        with self._preview_generation_lock:
+            self.preview_dirty.add(idx)
         self.save_focal_points()
     
     def _generate_previews_for_image(self, idx, focal, orientation=None):
@@ -2185,13 +2796,15 @@ class FocalPointAlignerCore:
                 if frame is None:
                     frame = np.full((target_h, target_w, 3), 0, dtype=np.uint8)
                 h0, w0 = frame.shape[:2]
-                use_focal = focal if focal is not None else (w0 / 2, h0 / 2)
+                interp = self.interpolate_focal_at(idx, frame_idx)
+                use_focal = (interp[0], interp[1])
+                use_scale = interp[2]
                 fx, fy = transform_focal_for_flips(use_focal[0], use_focal[1], w0, h0, fh, fv)
                 flipped = apply_user_flips(frame, fh, fv)
                 aligned, _ = render_aligned(
                     flipped, (fx, fy), target_w, target_h,
                     max_zoom=self.max_zoom,
-                    crop_scale=crop_scale,
+                    crop_scale=use_scale,
                 )
                 if enc_w != target_w or enc_h != target_h:
                     canvas = np.zeros((enc_h, enc_w, 3), dtype=np.uint8)
@@ -2544,6 +3157,7 @@ class FocalPointAlignerCore:
         self.in_frames = _shift_dict(self.in_frames)
         self.out_frames = _shift_dict(self.out_frames)
         self.work_frames = _shift_dict(self.work_frames)
+        self.keyframes = _shift_dict(self.keyframes)
         self.video_meta = _shift_dict(self.video_meta)
         self.completed = _shift_set(self.completed)
         self.preview_dirty = _shift_set(self.preview_dirty)
@@ -2575,6 +3189,7 @@ class FocalPointAlignerCore:
         new_in = {}
         new_out = {}
         new_work = {}
+        new_keyframes = {}
         new_vmeta = {}
         
         for new_pos, orig_idx in enumerate(display_order):
@@ -2598,6 +3213,8 @@ class FocalPointAlignerCore:
                 new_out[new_pos] = self.out_frames[orig_idx]
             if orig_idx in self.work_frames:
                 new_work[new_pos] = self.work_frames[orig_idx]
+            if orig_idx in self.keyframes:
+                new_keyframes[new_pos] = list(self.keyframes[orig_idx])
             if orig_idx in self.video_meta:
                 new_vmeta[new_pos] = self.video_meta[orig_idx]
         
@@ -2615,6 +3232,7 @@ class FocalPointAlignerCore:
             self.in_frames = new_in
             self.out_frames = new_out
             self.work_frames = new_work
+            self.keyframes = new_keyframes
             self.video_meta = new_vmeta
             self.current_idx = old_to_new.get(self.current_idx, 0)
             self.preview_dirty = {
@@ -2710,6 +3328,7 @@ class FocalPointAlignerCore:
         self.completed.clear()
         self.auto_center_flags.clear()
         self.crop_scales.clear()
+        self.keyframes.clear()
         self.flip_h.clear()
         self.flip_v.clear()
         

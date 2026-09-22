@@ -30,6 +30,7 @@ export default defineConfig({
       '/batch': api,
       '/import': api,
       '/arrange': api,
+      '/video': api,
       '/dialog': { target: api, timeout: 600000 },
     },
   },
