@@ -93,6 +93,7 @@ export const api = {
   arrangeRecall: (body) => req('/arrange/recall', { method: 'POST', body: JSON.stringify(body) }),
   arrangeLeave: (body) => req('/arrange/leave', { method: 'POST', body: JSON.stringify(body || { commit: true }) }),
   arrangeReverse: () => req('/arrange/reverse', { method: 'POST', body: '{}' }),
+  arrangeClear: (body) => req('/arrange/clear', { method: 'POST', body: JSON.stringify(body || {}) }),
   videoRange: (body) => req('/video/range', { method: 'POST', body: JSON.stringify(body) }),
   videoSplit: (body) => req('/video/split', { method: 'POST', body: JSON.stringify(body) }),
   videoKeyframe: (body) => req('/video/keyframe', { method: 'POST', body: JSON.stringify(body) }),

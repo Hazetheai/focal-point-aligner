@@ -55,8 +55,8 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 ## Import download
 
-- `import_download.py` — vendored imgtools download helpers (httpx). List naming uses a `{name}` pattern (default `image_urls--{name}` → e.g. `image_urls--cats.txt` → `cats/`). Opener edits prefix + optional suffix around `{name}`; persisted as `import_name_pattern` in `config.json` prefs. `POST /import/download` accepts `name_pattern`.
-- `POST /import/download` with `{ dest, name?, name_pattern?, urls? | url_file? | url_folder? }` → SSE progress events, final `{ complete, root, folders }` for batch handoff. Opener shows download progress + action log.
+- `import_download.py` — vendored imgtools download helpers (httpx). List naming uses a `{name}` pattern (default `image_urls--{name}` → e.g. `image_urls--cats.txt` → `cats/`). Folder name template (default `{name}`) supports `{name}`, `{n}` / `{nn}` (job index), `{stem}`; persisted as `import_name_pattern` / `import_folder_template` in prefs. `POST /import/download` accepts both.
+- `POST /import/download` with `{ dest, name?, name_pattern?, folder_template?, urls? | url_file? | url_folder? }` → SSE progress events, final `{ complete, root, folders }` for batch handoff. Opener shows download progress + action log.
 
 ## Theme
 
@@ -70,8 +70,8 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - Reverse (`POST /arrange/reverse`) flips the current order and updates the **active** slot in place — does not create a new preset. Session exposes `arrangement_reversed` so the Reverse control stays lit for that slot until reversed again (or a new AutoArrange overwrites the slot).
 - Depth AutoArrange is near→far only; use Reverse for far→near. Lead match uses the **selected** thumbnail (hover Lead to pulse its border).
 - Arrange: Cmd/Ctrl-click and Shift-click select multiple thumbnails; dragging moves the whole selection as a block.
-- `focal_points.json` stores `arrangements` (`original`, `1`…`6`), `arrangement_active`, `arrangement_methods` (per-slot last AutoArrange/manual mode), and `arrangement_reversed`. Hotkeys `0`–`6` recall; leaving Arrange commits a manual draft to the next free slot.
-- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`. Arrange AutoArrange/slots live in the shared action-bar **Arrange** dropdown (same row as Size / Guides / Details, right-aligned with Reverse); progress floats above that trigger.
+- `focal_points.json` stores `arrangements` (`original`, `1`…`6`), `arrangement_active`, `arrangement_methods` (per-slot last AutoArrange/manual mode), `arrangement_modified` (true when the user tweaked an AutoArrange slot), and `arrangement_reversed`. Hotkeys `0`–`6` recall; **Backspace** clears the active numeric slot (confirm) and recalls Original. Leaving Arrange commits a manual draft to the next free slot (or overwrites the active numeric slot / slot `1` when full — never Original). AutoArrange uses the same allocation: first free → else active numeric → else `1` when on Original.
+- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`, `/arrange/clear`. Arrange AutoArrange icons highlight the method used for the active slot (faded when `arrangement_modified`).
 - `load_image_safely` always returns 8-bit BGR (scales 10/12/16-bit sources) so Arrange aligned previews / export are not near-white. Preview cache filenames use a `_u8` suffix.
 
 ## Focal clicks (Original tab)

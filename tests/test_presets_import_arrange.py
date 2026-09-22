@@ -62,6 +62,14 @@ def test_extract_folder_name_from_filename_patterns():
     assert extract_folder_name_from_filename("plain.txt", "image_urls--{name}") is None
 
 
+def test_format_folder_name_tokens():
+    from import_download import format_folder_name
+    assert format_folder_name("{name}", name="cats", stem="image_urls--cats", index=1) == "cats"
+    assert format_folder_name("{name}-{n}", name="cats", index=3) == "cats-3"
+    assert format_folder_name("{name}_{nn}", name="cats", index=3) == "cats_03"
+    assert format_folder_name("{stem}", name="cats", stem="image_urls--cats", index=1) == "image_urls--cats"
+
+
 def test_sanitize_filename():
     assert ".." not in sanitize_filename("foo/../bar.jpg")
 
@@ -283,3 +291,53 @@ def test_arrange_reverse_in_place(client, tmp_path):
     assert rev2.status_code == 200
     assert [im["filename"] for im in rev2.json()["images"]] == before
     assert rev2.json().get("arrangement_reversed") is False
+
+
+def test_auto_arrange_overwrites_active_when_full(client, tmp_path, monkeypatch):
+    src = _imgs(tmp_path, 3)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 160,
+        "target_height": 90,
+    })
+
+    def fake_color(paths, progress=None, frame_indices=None):
+        order = list(range(len(paths)))
+        if progress:
+            for i, p in enumerate(paths):
+                progress(i + 1, len(paths), Path(p).name)
+        return order, [("white", 1.0)] * len(paths)
+
+    monkeypatch.setattr("arrange_auto.sort_indices_by_color", fake_color)
+    for slot in ("1", "2", "3", "4", "5", "6"):
+        last = _sse_last(client.post("/arrange/auto", json={"mode": "color", "slot": slot}))
+        assert last.get("phase") == "complete"
+    # Active is 6; next auto without slot should overwrite 6 (not jump to 1)
+    last = _sse_last(client.post("/arrange/auto", json={"mode": "color"}))
+    assert last.get("phase") == "complete"
+    assert last["arrangement_active"] == "6"
+    assert last["arrangement_methods"]["6"] == "color"
+    # On original with all full → overwrite slot 1
+    client.post("/arrange/recall", json={"slot": "original"})
+    last = _sse_last(client.post("/arrange/auto", json={"mode": "color"}))
+    assert last["arrangement_active"] == "1"
+
+
+def test_arrange_clear_slot(client, tmp_path):
+    src = _imgs(tmp_path, 3)
+    client.post("/session", json={
+        "input_folder": str(src),
+        "output_folder": str(tmp_path / "out"),
+        "target_width": 160,
+        "target_height": 90,
+    })
+    last = _sse_last(client.post("/arrange/auto", json={"mode": "color", "slot": "2"}))
+    assert last["arrangement_active"] == "2"
+    r = client.post("/arrange/clear", json={"slot": "2"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["arrangement_active"] == "original"
+    assert "2" not in body.get("arrangements", {})
+    bad = client.post("/arrange/clear", json={"slot": "original"})
+    assert bad.status_code == 400

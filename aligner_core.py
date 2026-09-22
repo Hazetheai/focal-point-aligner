@@ -900,11 +900,12 @@ class FocalPointAlignerCore:
         self._cancel_preview_generation = False
         self._preview_generation_lock = threading.Lock()
 
-        # Arrangement history: "original" + "1".."9" filename lists
+        # Arrangement history: "original" + "1".."6" filename lists
         self.arrangements = {}
         self.arrangement_active = "original"
         self.arrangement_reversed = {}  # slot -> bool (Reverse button lit state)
         self.arrangement_methods = {}  # slot -> "color"|"depth"|"lead"|"faces"|"manual"
+        self.arrangement_modified = {}  # slot -> bool (manual tweak after AutoArrange)
         self._arrange_draft = None  # pending manual order while on Arrange tab
         
         self.load_focal_points()
@@ -1506,6 +1507,10 @@ class FocalPointAlignerCore:
                         for k, v in data["arrangement_methods"].items()
                         if str(v) in allowed
                     }
+                if "arrangement_modified" in data and isinstance(data["arrangement_modified"], dict):
+                    self.arrangement_modified = {
+                        str(k): bool(v) for k, v in data["arrangement_modified"].items() if v
+                    }
 
                 if "current_idx" in data:
                     self.current_idx = data["current_idx"]
@@ -1514,7 +1519,7 @@ class FocalPointAlignerCore:
                 skip_keys = {
                     "alignment_mode", "preview_state", "discarded", "current_idx",
                     "order", "_meta", "arrangements", "arrangement_active",
-                    "arrangement_reversed", "arrangement_methods",
+                    "arrangement_reversed", "arrangement_methods", "arrangement_modified",
                 }
                 focal_data = {k: v for k, v in data.items() if k not in skip_keys}
                 
@@ -1819,6 +1824,10 @@ class FocalPointAlignerCore:
             data["arrangement_methods"] = {
                 k: str(v) for k, v in self.arrangement_methods.items() if v
             }
+        if self.arrangement_modified:
+            data["arrangement_modified"] = {
+                k: bool(v) for k, v in self.arrangement_modified.items() if v
+            }
         
         try:
             tmp_path = self.json_path.with_suffix(".json.tmp")
@@ -1874,11 +1883,30 @@ class FocalPointAlignerCore:
             self.save_focal_points()
         return ok
 
-    def save_arrangement_slot(self, slot: str, names=None, method=None):
+    def _numeric_arrangement_slots(self):
+        return [str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)]
+
+    def _allocate_arrangement_slot(self):
+        """Pick a numeric slot for a new AutoArrange / leave-commit.
+
+        Prefer the first free slot among 1…N. When all are filled, overwrite the
+        active numeric slot. If the active slot is Original (or invalid), overwrite
+        slot ``1``. Original is never allocated.
+        """
+        valid = self._numeric_arrangement_slots()
+        free = next((s for s in valid if s not in self.arrangements), None)
+        if free is not None:
+            return free
+        active = str(self.arrangement_active or "original")
+        if active in valid:
+            return active
+        return "1"
+
+    def save_arrangement_slot(self, slot: str, names=None, method=None, modified=None):
         slot = str(slot)
         if slot == "0":
             slot = "original"
-        valid_numeric = {str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)}
+        valid_numeric = set(self._numeric_arrangement_slots())
         if slot != "original" and slot not in valid_numeric:
             return False
         self.arrangements[slot] = list(names if names is not None else self.current_order_names())
@@ -1888,6 +1916,16 @@ class FocalPointAlignerCore:
             self.arrangement_methods[slot] = str(method)
         elif method is None and slot != "original" and slot not in self.arrangement_methods:
             self.arrangement_methods[slot] = "manual"
+        if modified is None:
+            # Fresh AutoArrange / explicit save clears the dirty bit; manual leave keeps dirty false.
+            if method and method != "manual":
+                self.arrangement_modified[slot] = False
+            elif method == "manual":
+                self.arrangement_modified[slot] = False
+        else:
+            self.arrangement_modified[slot] = bool(modified)
+        if slot != "original" and not self.arrangement_modified.get(slot):
+            self.arrangement_modified.pop(slot, None)
         self._arrange_draft = None
         self.save_focal_points()
         return True
@@ -1895,6 +1933,11 @@ class FocalPointAlignerCore:
     def mark_arrange_draft(self):
         """Record that manual arrange edits are pending (committed on leave)."""
         self._arrange_draft = self.current_order_names()
+        active = str(self.arrangement_active or "original")
+        if active != "original" and active in self.arrangements:
+            method = self.arrangement_methods.get(active)
+            if method and method != "manual":
+                self.arrangement_modified[active] = True
 
     def reverse_arrangement_in_place(self):
         """Reverse current order and update the active slot; do not create a new preset."""
@@ -1907,6 +1950,10 @@ class FocalPointAlignerCore:
         active = self.arrangement_active or "original"
         self.arrangements[active] = self.current_order_names()
         self.arrangement_reversed[active] = not bool(self.arrangement_reversed.get(active, False))
+        if active != "original":
+            method = self.arrangement_methods.get(active)
+            if method and method != "manual":
+                self.arrangement_modified[active] = True
         self._arrange_draft = None
         self.save_focal_points()
         return True
@@ -1919,18 +1966,39 @@ class FocalPointAlignerCore:
         if names == self.arrangements.get(self.arrangement_active):
             self._arrange_draft = None
             return None
-        valid_numeric = {str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)}
-        # Prefer overwrite active numeric slot, else next free, else slot 1
+        valid_numeric = set(self._numeric_arrangement_slots())
         active = self.arrangement_active
         if active in valid_numeric:
-            slot = active
-        else:
-            slot = next(
-                (str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1) if str(i) not in self.arrangements),
-                "1",
-            )
-        self.save_arrangement_slot(slot, names, method="manual")
+            method = self.arrangement_methods.get(active) or "manual"
+            if method != "manual":
+                self.save_arrangement_slot(active, names, method=method, modified=True)
+            else:
+                self.save_arrangement_slot(active, names, method="manual", modified=False)
+            return active
+        slot = self._allocate_arrangement_slot()
+        self.save_arrangement_slot(slot, names, method="manual", modified=False)
         return slot
+
+    def clear_arrangement_slot(self, slot: Optional[str] = None):
+        """Remove a numeric slot and recall Original. Original cannot be cleared."""
+        slot = str(slot or self.arrangement_active or "original")
+        if slot == "0":
+            slot = "original"
+        if slot == "original":
+            return False, "Cannot clear the Original slot"
+        if slot not in self._numeric_arrangement_slots():
+            return False, f"Invalid slot: {slot}"
+        if slot not in self.arrangements:
+            return False, f"No arrangement in slot {slot}"
+        self.arrangements.pop(slot, None)
+        self.arrangement_methods.pop(slot, None)
+        self.arrangement_modified.pop(slot, None)
+        self.arrangement_reversed.pop(slot, None)
+        self._arrange_draft = None
+        if not self.recall_arrangement("original"):
+            self.arrangement_active = "original"
+            self.save_focal_points()
+        return True, None
 
     def auto_arrange(self, mode: str, options: Optional[dict] = None, progress_callback=None):
         """Run an AutoArrange mode and save into a slot. Returns (ok, slot|error)."""
@@ -1976,14 +2044,8 @@ class FocalPointAlignerCore:
             return False, f"Unknown mode: {mode}"
         if not self.apply_arrange_order(order, mark_draft=False):
             return False, "apply_arrange_order failed"
-        slot = str(options.get("slot") or next(
-            (
-                str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)
-                if str(i) not in self.arrangements
-            ),
-            "1",
-        ))
-        self.save_arrangement_slot(slot, method=mode)
+        slot = str(options.get("slot") or self._allocate_arrangement_slot())
+        self.save_arrangement_slot(slot, method=mode, modified=False)
         return True, {"slot": slot, "labels": labels, "method": mode}
     
     def delete_focal_points_file(self):
@@ -2270,6 +2332,9 @@ class FocalPointAlignerCore:
             ),
             "arrangement_methods": {
                 k: str(v) for k, v in (self.arrangement_methods or {}).items() if v
+            },
+            "arrangement_modified": {
+                k: bool(v) for k, v in (self.arrangement_modified or {}).items() if v
             },
             "arrangement_slots": ["original"] + [str(i) for i in range(1, ARRANGEMENT_SLOT_MAX + 1)],
             "ffmpeg_available": ffmpeg_available(),

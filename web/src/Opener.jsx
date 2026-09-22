@@ -59,6 +59,7 @@ export default function Opener({ onStart, onBatchSession }) {
   const [importName, setImportName] = useState('imported')
   const [importPrefix, setImportPrefix] = useState('image_urls--')
   const [importSuffix, setImportSuffix] = useState('')
+  const [importFolderTemplate, setImportFolderTemplate] = useState('{name}')
   const [importUrls, setImportUrls] = useState('')
   const [importFile, setImportFile] = useState('')
   const [importFolder, setImportFolder] = useState('')
@@ -80,8 +81,24 @@ export default function Opener({ onStart, onBatchSession }) {
   const importNameExample = useMemo(() => {
     const sample = 'cats'
     const fileStem = importNamePattern.replace('{name}', sample)
-    return `${fileStem}.txt → ${sample}/`
-  }, [importNamePattern])
+    const folder = importFolderTemplate
+      .replace('{name}', sample)
+      .replace('{nn}', '01')
+      .replace('{n}', '1')
+      .replace('{stem}', fileStem)
+    return `${fileStem}.txt → ${folder}/`
+  }, [importNamePattern, importFolderTemplate])
+
+  const FOLDER_TOKENS = [
+    { token: '{name}', tip: 'Name captured from the list filename' },
+    { token: '{n}', tip: '1-based index among lists (1, 2, 3…)' },
+    { token: '{nn}', tip: 'Zero-padded index (01, 02, 03…)' },
+    { token: '{stem}', tip: 'Full list filename without .txt' },
+  ]
+
+  function insertFolderToken(token) {
+    setImportFolderTemplate((cur) => `${cur || ''}${token}`)
+  }
 
   useEffect(() => {
     api.prefs().then((p) => {
@@ -104,6 +121,9 @@ export default function Opener({ onStart, onBatchSession }) {
         setImportPrefix(pat)
         setImportSuffix('')
       }
+      setImportFolderTemplate(
+        (p.import_folder_template || '{name}').trim() || '{name}',
+      )
       if (nextMode === 'batch' && root) loadBatch(root)
     }).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,7 +274,12 @@ export default function Opener({ onStart, onBatchSession }) {
       setError('Choose a download destination folder')
       return
     }
-    const body = { dest: importDest, force: false, name_pattern: importNamePattern }
+    const body = {
+      dest: importDest,
+      force: false,
+      name_pattern: importNamePattern,
+      folder_template: importFolderTemplate.trim() || '{name}',
+    }
     if (importUrls.trim()) {
       body.name = importName.trim() || 'imported'
       body.urls = importUrls.split(/\n/).map((l) => l.trim()).filter((l) => /^https?:\/\//i.test(l))
@@ -273,7 +298,10 @@ export default function Opener({ onStart, onBatchSession }) {
     setBusy(true)
     setImportProgress({ phase: 'start', message: 'Starting download…', done: 0, total: 0 })
     try {
-      await api.savePrefs({ import_name_pattern: importNamePattern }).catch(() => {})
+      await api.savePrefs({
+        import_name_pattern: importNamePattern,
+        import_folder_template: importFolderTemplate.trim() || '{name}',
+      }).catch(() => {})
       const res = await api.importDownload(body)
       const report = await readSse(res, (ev) => {
         if (ev.phase === 'start') {
@@ -447,6 +475,32 @@ export default function Opener({ onStart, onBatchSession }) {
             </span>
             <span className="muted import-pattern-example">{importNameExample}</span>
           </div>
+          <div className="row import-pattern-row" style={{ marginTop: 10 }}>
+            <span className="muted import-pattern-heading">Folder name</span>
+            <input
+              className="import-folder-template"
+              value={importFolderTemplate}
+              onChange={(e) => setImportFolderTemplate(e.target.value)}
+              placeholder="{name}"
+              aria-label="Download folder name template"
+            />
+            <span className="import-token-chips" role="group" aria-label="Insert folder tokens">
+              {FOLDER_TOKENS.map(({ token, tip }) => (
+                <button
+                  key={token}
+                  type="button"
+                  className="secondary import-token-chip"
+                  title={tip}
+                  onClick={() => insertFolderToken(token)}
+                >
+                  {token}
+                </button>
+              ))}
+            </span>
+          </div>
+          <p className="muted import-token-help">
+            Tokens: <code>{'{name}'}</code> from the list file · <code>{'{n}'}</code>/<code>{'{nn}'}</code> list index · <code>{'{stem}'}</code> full filename stem.
+          </p>
           <div className="row" style={{ marginTop: 12 }}>
             <input value={importName} onChange={(e) => setImportName(e.target.value)} placeholder="Folder name for pasted URLs" />
             <span className="muted">{urlCount} URL(s)</span>

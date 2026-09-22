@@ -32,6 +32,15 @@ REQUEST_HEADERS = {
 }
 
 DEFAULT_NAME_PATTERN = "image_urls--{name}"
+DEFAULT_FOLDER_TEMPLATE = "{name}"
+
+# Tokens available in the download-folder template (after {name} is extracted).
+FOLDER_TEMPLATE_TOKENS = (
+    ("{name}", "Captured name from the list filename"),
+    ("{n}", "1-based index among lists in this download (1, 2, 3…)"),
+    ("{nn}", "Zero-padded two-digit index (01, 02, 03…)"),
+    ("{stem}", "Full list filename without extension"),
+)
 
 
 def sanitize_filename(filename: str) -> str:
@@ -163,6 +172,28 @@ def extract_folder_name_from_filename(
     return None
 
 
+def format_folder_name(
+    template: Optional[str],
+    *,
+    name: str,
+    stem: str = "",
+    index: int = 1,
+) -> str:
+    """Fill ``{name}`` / ``{n}`` / ``{nn}`` / ``{stem}`` in a folder template."""
+    tpl = (template or DEFAULT_FOLDER_TEMPLATE).strip() or DEFAULT_FOLDER_TEMPLATE
+    idx = max(1, int(index))
+    out = (
+        tpl
+        .replace("{name}", str(name or "imported"))
+        .replace("{nn}", f"{idx:02d}")
+        .replace("{n}", str(idx))
+        .replace("{stem}", str(stem or name or "imported"))
+    )
+    out = re.sub(r"[^a-zA-Z0-9._-]+", "_", out)
+    out = re.sub(r"_+", "_", out).strip("._-")
+    return out or (str(name or "imported").strip() or "imported")
+
+
 def find_url_files_in_folder(folder_path: str):
     folder = Path(folder_path)
     return sorted(str(p) for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".txt")
@@ -209,6 +240,7 @@ def download_from_sources(
     url_file: Optional[str] = None,
     url_folder: Optional[str] = None,
     name_pattern: Optional[str] = None,
+    folder_template: Optional[str] = None,
     force: bool = False,
     progress: Optional[Callable[[dict], None]] = None,
 ):
@@ -221,31 +253,37 @@ def download_from_sources(
     total_downloaded = 0
     total_failed = 0
     pattern = (name_pattern or DEFAULT_NAME_PATTERN).strip() or DEFAULT_NAME_PATTERN
+    template = (folder_template or DEFAULT_FOLDER_TEMPLATE).strip() or DEFAULT_FOLDER_TEMPLATE
 
+    # jobs: list of (raw_name, stem, urls)
     jobs = []
     if urls:
         folder_name = (name or "imported").strip() or "imported"
-        jobs.append((folder_name, list(urls)))
+        jobs.append((folder_name, folder_name, list(urls)))
     if url_file:
         path = Path(url_file).expanduser().resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Not a file: {path}")
-        folder_name = extract_folder_name_from_filename(str(path), pattern) or path.stem
-        jobs.append((folder_name, read_urls_from_file(str(path))))
+        raw = extract_folder_name_from_filename(str(path), pattern) or path.stem
+        jobs.append((raw, path.stem, read_urls_from_file(str(path))))
     if url_folder:
         folder = Path(url_folder).expanduser().resolve()
         if not folder.is_dir():
             raise NotADirectoryError(f"Not a directory: {folder}")
         for txt in find_url_files_in_folder(str(folder)):
-            folder_name = extract_folder_name_from_filename(txt, pattern) or Path(txt).stem
-            jobs.append((folder_name, read_urls_from_file(txt)))
+            path = Path(txt)
+            raw = extract_folder_name_from_filename(txt, pattern) or path.stem
+            jobs.append((raw, path.stem, read_urls_from_file(txt)))
 
     if not jobs:
         raise ValueError("Provide urls, url_file, or url_folder")
 
-    for folder_name, job_urls in jobs:
+    for job_index, (raw_name, stem, job_urls) in enumerate(jobs, start=1):
         if not job_urls:
             continue
+        folder_name = format_folder_name(
+            template, name=raw_name, stem=stem, index=job_index,
+        )
         out = dest_path / folder_name
         failed = []
         total_urls += len(job_urls)
@@ -275,4 +313,5 @@ def download_from_sources(
         "total_downloaded": total_downloaded,
         "total_failed": total_failed,
         "name_pattern": pattern,
+        "folder_template": template,
     }

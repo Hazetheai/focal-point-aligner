@@ -129,6 +129,7 @@ class ImportDownloadBody(BaseModel):
     url_file: Optional[str] = None
     url_folder: Optional[str] = None
     name_pattern: Optional[str] = None
+    folder_template: Optional[str] = None
     force: bool = False
 
 
@@ -152,6 +153,10 @@ class ArrangeRecallBody(BaseModel):
 
 class ArrangeLeaveBody(BaseModel):
     commit: bool = True
+
+
+class ArrangeClearBody(BaseModel):
+    slot: Optional[str] = None
 
 
 class VideoRangeBody(BaseModel):
@@ -436,12 +441,15 @@ def import_download(body: ImportDownloadBody):
                 url_file=body.url_file,
                 url_folder=body.url_folder,
                 name_pattern=body.name_pattern,
+                folder_template=body.folder_template,
                 force=body.force,
                 progress=on_progress,
             )
             prefs_update = {"last_batch_root_dir": report["root"], "mode": "batch"}
             if body.name_pattern:
                 prefs_update["import_name_pattern"] = body.name_pattern
+            if body.folder_template:
+                prefs_update["import_folder_template"] = body.folder_template
             save_prefs(prefs_update)
             q.put(("done", report))
         except Exception as e:
@@ -551,6 +559,17 @@ def arrange_reverse():
     core = _core()
     if not core.reverse_arrangement_in_place():
         raise HTTPException(400, "Could not reverse arrangement")
+    return core.session_snapshot()
+
+
+@app.post("/arrange/clear")
+def arrange_clear(body: Optional[ArrangeClearBody] = None):
+    """Clear a numeric arrangement slot and recall Original."""
+    core = _core()
+    slot = body.slot if body else None
+    ok, err = core.clear_arrangement_slot(slot)
+    if not ok:
+        raise HTTPException(400, err or "Could not clear slot")
     return core.session_snapshot()
 
 

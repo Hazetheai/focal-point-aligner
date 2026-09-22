@@ -41,7 +41,7 @@ const HOTKEYS_ORIGINAL = new Set(['Enter', ' ', 'Delete', 'Backspace', 'h', 'H',
 /** Extra keys on Preview. */
 const HOTKEYS_PREVIEW = new Set(['c', 'C', 'Enter', '<', '>', ',', '.', ' '])
 /** Extra keys on Arrange. */
-const HOTKEYS_ARRANGE = new Set(['0', '1', '2', '3', '4', '5', '6'])
+const HOTKEYS_ARRANGE = new Set(['0', '1', '2', '3', '4', '5', '6', 'Backspace'])
 const ARRANGEMENT_SLOTS = ['original', '1', '2', '3', '4', '5', '6']
 const PREVIEW_WRAP_KEY = 'fpa-preview-wrap'
 const MASK_FIT_KEY = 'fpa-mask-fit'
@@ -2596,6 +2596,8 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
   const [exportDone, setExportDone] = useState(false)
   const [resetOpen, setResetOpen] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const [clearSlotOpen, setClearSlotOpen] = useState(false)
+  const [clearingSlot, setClearingSlot] = useState(false)
   const [progress, setProgress] = useState(null)
   const [exportError, setExportError] = useState('')
   const [error, setError] = useState('')
@@ -2842,6 +2844,24 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
     }
   }
 
+  const confirmClearSlot = async () => {
+    setClearingSlot(true)
+    setError('')
+    try {
+      const active = session.arrangement_active || 'original'
+      apply(await api.arrangeClear({ slot: active }))
+      setClearSlotOpen(false)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setClearingSlot(false)
+    }
+  }
+
+  const activeArrangeSlot = session.arrangement_active || 'original'
+  const activeArrangeMethod = session.arrangement_methods?.[activeArrangeSlot] || null
+  const activeArrangeModified = Boolean(session.arrangement_modified?.[activeArrangeSlot])
+
   const goTo = async (index, { wrap = false } = {}) => {
     if (index === session.current_idx) return
     await flushPending()
@@ -2943,6 +2963,13 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
 
   const onKey = useCallback(async (e) => {
     if (exportOpen) return
+    if (clearSlotOpen) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        if (!clearingSlot) setClearSlotOpen(false)
+      }
+      return
+    }
     if (resetOpen) {
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -2982,8 +3009,17 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
       else if (k === 'd' || k === 'D') {
         e.preventDefault()
         await duplicateCurrent()
-      } else if (k === 'Delete' || k === 'Backspace') apply(await api.clearFocal(session.current_idx))
-      else if (k === 'p' || k === 'P') await switchTab(tab === 'preview' ? 'original' : 'preview')
+      } else if (k === 'Delete' || k === 'Backspace') {
+        if (tab === 'arrange') {
+          e.preventDefault()
+          const active = session.arrangement_active || 'original'
+          if (active !== 'original' && session.arrangements?.[active]) {
+            setClearSlotOpen(true)
+          }
+          return
+        }
+        apply(await api.clearFocal(session.current_idx))
+      } else if (k === 'p' || k === 'P') await switchTab(tab === 'preview' ? 'original' : 'preview')
       else if (k === 'o' || k === 'O') {
         const mode = session.alignment_mode === 'portrait' ? 'landscape' : 'portrait'
         apply(await api.setMode(mode))
@@ -3013,7 +3049,7 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
     } catch (err) {
       setError(err.message)
     }
-  }, [session, pending, tab, exportOpen, resetOpen, resetting, onFinished, setShowGrid, maskImage, previewWrap])
+  }, [session, pending, tab, exportOpen, resetOpen, resetting, clearSlotOpen, clearingSlot, onFinished, setShowGrid, maskImage, previewWrap])
 
   useEffect(() => {
     window.addEventListener('keydown', onKey)
@@ -3271,22 +3307,40 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
             )}
             <IconBtn
               icon={<IconArrangeColor />}
-              title="Color"
+              title={activeArrangeMethod === 'color'
+                ? (activeArrangeModified ? 'Color (edited)' : 'Color — current slot')
+                : 'Color'}
               label="Color"
+              className={activeArrangeMethod === 'color'
+                ? (activeArrangeModified ? 'method-active is-modified' : '')
+                : 'secondary'}
+              selected={activeArrangeMethod === 'color' && !activeArrangeModified}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('color')}
             />
             <IconBtn
               icon={<IconArrangeDepth />}
-              title="Depth"
+              title={activeArrangeMethod === 'depth'
+                ? (activeArrangeModified ? 'Depth (edited)' : 'Depth — current slot')
+                : 'Depth'}
               label="Depth"
+              className={activeArrangeMethod === 'depth'
+                ? (activeArrangeModified ? 'method-active is-modified' : '')
+                : 'secondary'}
+              selected={activeArrangeMethod === 'depth' && !activeArrangeModified}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('depth', { near_to_far: true })}
             />
             <IconBtn
               icon={<IconArrangeLead />}
-              title="Lead"
+              title={activeArrangeMethod === 'lead'
+                ? (activeArrangeModified ? 'Lead (edited)' : 'Lead — current slot')
+                : 'Lead'}
               label="Lead"
+              className={activeArrangeMethod === 'lead'
+                ? (activeArrangeModified ? 'method-active is-modified' : '')
+                : 'secondary'}
+              selected={activeArrangeMethod === 'lead' && !activeArrangeModified}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('lead', { lead_index: session.current_idx, axis: 'x' })}
               onMouseEnter={() => setLeadHover(true)}
@@ -3296,8 +3350,14 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
             />
             <IconBtn
               icon={<IconArrangeFaces />}
-              title="Faces"
+              title={activeArrangeMethod === 'faces'
+                ? (activeArrangeModified ? 'Faces (edited)' : 'Faces — current slot')
+                : 'Faces'}
               label="Faces"
+              className={activeArrangeMethod === 'faces'
+                ? (activeArrangeModified ? 'method-active is-modified' : '')
+                : 'secondary'}
+              selected={activeArrangeMethod === 'faces' && !activeArrangeModified}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('faces')}
             />
@@ -3444,22 +3504,27 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
                   const filled = slot === 'original' || Boolean(session.arrangements?.[slot])
                   const active = (session.arrangement_active || 'original') === slot
                   const method = session.arrangement_methods?.[slot]
+                  const modified = Boolean(session.arrangement_modified?.[slot])
                   const methodName = arrangeMethodLabel(method)
-                  const label = slot === 'original' ? 'Original (0)' : `Slot ${slot}`
-                  const title = methodName ? `${label} · ${methodName}` : label
+                  const label = slot === 'original' ? 'Original' : `Slot ${slot}`
+                  const title = [
+                    label,
+                    methodName ? methodName : null,
+                    modified ? 'edited' : null,
+                  ].filter(Boolean).join(' · ')
                   return (
                     <button
                       key={slot}
                       type="button"
-                      className={`arrange-slot-btn${active ? ' is-active' : ' secondary'}`}
+                      className={`arrange-slot-btn${active ? ' is-active' : ' secondary'}${modified ? ' is-modified' : ''}`}
                       disabled={!filled}
                       title={title}
                       aria-label={title}
                       onClick={() => recallSlot(slot)}
                     >
-                      <span className="arrange-slot-num">{slot === 'original' ? '0' : slot}</span>
+                      <span className="arrange-slot-num">{slot === 'original' ? 'Original' : slot}</span>
                       {method ? (
-                        <span className="arrange-slot-method" aria-hidden="true">
+                        <span className={`arrange-slot-method${modified ? ' is-faded' : ''}`} aria-hidden="true">
                           {arrangeMethodIcon(method)}
                         </span>
                       ) : null}
@@ -3607,10 +3672,40 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
             />
           </>
         )}
+        {tab === 'arrange' && (
+          <Hotkey
+            kbd="⌫"
+            label="Clear slot"
+            danger
+            disabled={(session.arrangement_active || 'original') === 'original'}
+            onClick={() => {
+              const active = session.arrangement_active || 'original'
+              if (active !== 'original' && session.arrangements?.[active]) setClearSlotOpen(true)
+            }}
+          />
+        )}
         <Hotkey kbd="R" label="Reset" danger onClick={() => setResetOpen(true)} />
         <Hotkey kbd="E" label="Export" onClick={() => setExportOpen(true)} />
         <Hotkey kbd="Esc" label={batchMode ? 'Next folder' : 'Opener'} onClick={onFinished} />
       </div>
+
+      {clearSlotOpen && (
+        <div className="export-overlay" onClick={() => !clearingSlot && setClearSlotOpen(false)}>
+          <div className="export-card card" onClick={(e) => e.stopPropagation()}>
+            <h2>Clear arrangement slot?</h2>
+            <p className="muted">
+              Removes slot {session.arrangement_active || ''} and restores the Original order.
+              This cannot be undone.
+            </p>
+            <div className="row" style={{ marginTop: 16 }}>
+              <button className="danger" disabled={clearingSlot} onClick={confirmClearSlot}>
+                {clearingSlot ? 'Clearing…' : 'Clear slot'}
+              </button>
+              <button className="secondary" disabled={clearingSlot} onClick={() => setClearSlotOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {resetOpen && (
         <div className="export-overlay" onClick={() => !resetting && setResetOpen(false)}>
