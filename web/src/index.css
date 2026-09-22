@@ -1067,12 +1067,25 @@ button.secondary[aria-pressed="true"] { background: var(--accent); }
 }
 .thumb .idx {
   position: absolute; left: 4px; top: 4px;
-  background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 4px; font-size: 11px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  z-index: 2;
+  pointer-events: none;
 }
 .thumb-note {
   position: absolute; right: 4px; bottom: 4px;
-  background: rgba(0,0,0,.65); padding: 2px 6px; border-radius: 4px; font-size: 10px;
-  color: var(--muted);
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  z-index: 2;
+  pointer-events: none;
 }
 .thumb.no-focal { opacity: 0.7; }
 
