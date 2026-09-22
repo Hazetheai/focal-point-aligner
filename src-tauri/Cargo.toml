@@ -1,6 +1,6 @@
 [package]
 name = "focal-point-aligner"
-version = "0.1.0"
+version = "0.2.0"
 description = "Focal Point Aligner"
 authors = ["you"]
 edition = "2021"
