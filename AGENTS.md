@@ -180,6 +180,7 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip X (up
 
 - One `current_idx` for Original, Preview, Arrange, nav dots, discard.
 - Arrow keys do not wrap on any tab (stops at ends). Preview wrap was making tabs feel “on a different image”.
+- Nav dots / pagination are hidden on the Arrange tab (thumbnails are the navigator).
 - Discard (`POST /discard?index=`) uses that index; all lists compact together.
 
 ## Batch mode

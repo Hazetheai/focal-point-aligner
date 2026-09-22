@@ -3599,7 +3599,9 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
 
       {error && <p className="error">{error}</p>}
 
-      <NavDots session={session} onGo={async (idx) => { try { await goTo(idx) } catch (err) { setError(err.message) } }} />
+      {tab !== 'arrange' && (
+        <NavDots session={session} onGo={async (idx) => { try { await goTo(idx) } catch (err) { setError(err.message) } }} />
+      )}
 
       <div className="hotkeys">
         <Hotkey kbd="← →" label="Navigate" onClick={() => step(1)} />
