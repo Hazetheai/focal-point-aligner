@@ -71,7 +71,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - Depth AutoArrange is near→far only; use Reverse for far→near. Lead match uses the **selected** thumbnail (hover Lead to pulse its border).
 - Arrange: Cmd/Ctrl-click and Shift-click select multiple thumbnails; dragging moves the whole selection as a block.
 - `focal_points.json` stores `arrangements` (`original`, `1`…`6`), `arrangement_active`, `arrangement_methods` (per-slot last AutoArrange/manual mode), `arrangement_modified` (true when the user tweaked an AutoArrange slot), and `arrangement_reversed`. Hotkeys `0`–`6` recall; **Backspace** clears the active numeric slot (confirm) and recalls Original. Leaving Arrange commits a manual draft onto the active numeric slot (or slot `1` when on Original). AutoArrange always overwrites the active numeric slot; on Original it always writes slot `1`.
-- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`, `/arrange/clear`. Arrange AutoArrange icons highlight the method used for the active slot (faded when `arrangement_modified`).
+- APIs: `POST /arrange/auto` (SSE progress + final session), `/arrange/slot`, `/arrange/recall`, `/arrange/leave`, `/arrange/reverse`, `/arrange/clear`. Arrange AutoArrange icons highlight the method used for the active slot; modified slots keep that method icon and show a `*` (tooltip includes “Modified”).
 - `load_image_safely` always returns 8-bit BGR (scales 10/12/16-bit sources) so Arrange aligned previews / export are not near-white. Preview cache filenames use a `_u8` suffix.
 
 ## Focal clicks (Original tab)

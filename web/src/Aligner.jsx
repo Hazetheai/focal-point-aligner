@@ -3323,39 +3323,33 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
             <IconBtn
               icon={<IconArrangeColor />}
               title={activeArrangeMethod === 'color'
-                ? (activeArrangeModified ? 'Color (edited)' : 'Color — current slot')
+                ? (activeArrangeModified ? 'Color — current slot (modified)' : 'Color — current slot')
                 : 'Color'}
               label="Color"
-              className={activeArrangeMethod === 'color'
-                ? (activeArrangeModified ? 'method-active is-modified' : '')
-                : 'secondary'}
-              selected={activeArrangeMethod === 'color' && !activeArrangeModified}
+              className={activeArrangeMethod === 'color' ? '' : 'secondary'}
+              selected={activeArrangeMethod === 'color'}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('color')}
             />
             <IconBtn
               icon={<IconArrangeDepth />}
               title={activeArrangeMethod === 'depth'
-                ? (activeArrangeModified ? 'Depth (edited)' : 'Depth — current slot')
+                ? (activeArrangeModified ? 'Depth — current slot (modified)' : 'Depth — current slot')
                 : 'Depth'}
               label="Depth"
-              className={activeArrangeMethod === 'depth'
-                ? (activeArrangeModified ? 'method-active is-modified' : '')
-                : 'secondary'}
-              selected={activeArrangeMethod === 'depth' && !activeArrangeModified}
+              className={activeArrangeMethod === 'depth' ? '' : 'secondary'}
+              selected={activeArrangeMethod === 'depth'}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('depth', { near_to_far: true })}
             />
             <IconBtn
               icon={<IconArrangeLead />}
               title={activeArrangeMethod === 'lead'
-                ? (activeArrangeModified ? 'Lead (edited)' : 'Lead — current slot')
+                ? (activeArrangeModified ? 'Lead — current slot (modified)' : 'Lead — current slot')
                 : 'Lead'}
               label="Lead"
-              className={activeArrangeMethod === 'lead'
-                ? (activeArrangeModified ? 'method-active is-modified' : '')
-                : 'secondary'}
-              selected={activeArrangeMethod === 'lead' && !activeArrangeModified}
+              className={activeArrangeMethod === 'lead' ? '' : 'secondary'}
+              selected={activeArrangeMethod === 'lead'}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('lead', { lead_index: session.current_idx, axis: 'x' })}
               onMouseEnter={() => setLeadHover(true)}
@@ -3366,13 +3360,11 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
             <IconBtn
               icon={<IconArrangeFaces />}
               title={activeArrangeMethod === 'faces'
-                ? (activeArrangeModified ? 'Faces (edited)' : 'Faces — current slot')
+                ? (activeArrangeModified ? 'Faces — current slot (modified)' : 'Faces — current slot')
                 : 'Faces'}
               label="Faces"
-              className={activeArrangeMethod === 'faces'
-                ? (activeArrangeModified ? 'method-active is-modified' : '')
-                : 'secondary'}
-              selected={activeArrangeMethod === 'faces' && !activeArrangeModified}
+              className={activeArrangeMethod === 'faces' ? '' : 'secondary'}
+              selected={activeArrangeMethod === 'faces'}
               disabled={arrangeBusy}
               onClick={() => runAutoArrange('faces')}
             />
@@ -3524,8 +3516,8 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
                   const label = slot === 'original' ? 'OG (Original)' : `Slot ${slot}`
                   const title = [
                     label,
-                    methodName ? methodName : null,
-                    modified ? 'edited' : null,
+                    methodName || null,
+                    modified ? 'Modified' : null,
                   ].filter(Boolean).join(' · ')
                   return (
                     <button
@@ -3539,9 +3531,12 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
                     >
                       <span className="arrange-slot-num">{slot === 'original' ? 'OG' : slot}</span>
                       {method ? (
-                        <span className={`arrange-slot-method${modified ? ' is-faded' : ''}`} aria-hidden="true">
+                        <span className="arrange-slot-method" aria-hidden="true">
                           {arrangeMethodIcon(method)}
                         </span>
+                      ) : null}
+                      {modified ? (
+                        <span className="arrange-slot-asterisk" aria-hidden="true">*</span>
                       ) : null}
                     </button>
                   )

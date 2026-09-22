@@ -537,29 +537,20 @@ button.secondary[aria-pressed="true"] { background: var(--accent); }
   display: inline-flex;
   width: 14px;
   height: 14px;
-  opacity: 0.9;
-}
-.arrange-slot-method.is-faded,
-.arrange-slot-btn.is-modified .arrange-slot-method {
-  opacity: 0.45;
+  opacity: 0.95;
 }
 .arrange-slot-method svg {
   width: 14px;
   height: 14px;
   display: block;
 }
-.icon-btn.method-active.is-modified,
-.arrange-action-cluster .icon-btn.method-active.is-modified {
-  background: color-mix(in srgb, var(--accent) 45%, var(--surface));
-  color: #fff;
-  opacity: 0.85;
-}
-@supports not (background: color-mix(in srgb, red 50%, blue)) {
-  .icon-btn.method-active.is-modified,
-  .arrange-action-cluster .icon-btn.method-active.is-modified {
-    background: var(--accent);
-    opacity: 0.55;
-  }
+.arrange-slot-asterisk {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  margin-left: -1px;
+  color: inherit;
+  opacity: 0.95;
 }
 .facts-toggle {
   display: grid;
