@@ -579,12 +579,6 @@ button.secondary[aria-pressed="true"] { background: var(--accent); }
   border-color: var(--primary);
   color: #fff;
 }
-.facts-toggle:hover .facts-role,
-.facts-toggle[aria-expanded="true"] .facts-role,
-.facts-toggle:hover .facts-caret,
-.facts-toggle[aria-expanded="true"] .facts-caret {
-  color: #fff;
-}
 .facts-panel {
   position: absolute;
   top: calc(100% + 6px);
@@ -622,11 +616,18 @@ button.secondary[aria-pressed="true"] { background: var(--accent); }
   min-width: 200px;
 }
 .facts-role {
-  color: var(--text);
+  color: inherit;
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+.facts-toggle .facts-role {
+  color: var(--text);
+}
+.facts-toggle:hover .facts-role,
+.facts-toggle[aria-expanded="true"] .facts-role {
+  color: #fff;
 }
 .facts-caret {
   width: 1em;
@@ -634,6 +635,10 @@ button.secondary[aria-pressed="true"] { background: var(--accent); }
   color: var(--accent);
   font-size: 11px;
   flex-shrink: 0;
+}
+.facts-toggle:hover .facts-caret,
+.facts-toggle[aria-expanded="true"] .facts-caret {
+  color: #fff;
 }
 .facts-panel > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px; align-items: start; }
 .size-facts-panel,
