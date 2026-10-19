@@ -17,7 +17,7 @@ const ABOUT_MD = `# About Focal Point Aligner
 
 **Focal Point Aligner** aligns a folder of photos and videos around a focal point, then exports them to a shared frame size.
 
-Version **0.3.0**
+Version **0.3.1**
 
 Desktop builds use a Tauri shell around the React + FastAPI UI. The app still needs this project checkout and \`./venv\` (or \`FPA_ROOT\` / \`FPA_PYTHON\`).
 
