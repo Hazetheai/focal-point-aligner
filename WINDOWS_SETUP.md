@@ -1,6 +1,6 @@
 # Windows / cross-platform setup
 
-Use **native Windows PowerShell** (not WSL) for both `npm run dev` and the Tauri NSIS build. Full details: **[README.md](README.md)**.
+Use **native Windows PowerShell** (not WSL) for both `npm run dev` and the Tauri NSIS / portable builds. Full details: **[README.md](README.md)**.
 
 ## Quick start (dev UI)
 
@@ -17,6 +17,14 @@ Also need **Rust**, **MSVC Build Tools** (C++ workload), and **WebView2** (usual
 .\scripts\open-app.ps1
 ```
 
-The `.exe` / installer still needs this checkout + `.\venv` (or `FPA_ROOT` / `FPA_PYTHON`).
+## Standalone zip for a collaborator
+
+No signing license required. The pack includes the exe + Python sources + a local `venv`, so they do **not** need git/npm.
+
+```powershell
+.\scripts\pack_windows_portable.ps1
+```
+
+Send them `releases\FocalPointAligner-portable-v*.zip`. They unzip → **Start.bat**. SmartScreen: More info → Run anyway. Optional: `winget install ffmpeg` for video.
 
 End-user Help: [`docs/user/`](docs/user/).

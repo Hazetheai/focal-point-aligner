@@ -68,7 +68,23 @@ Output: NSIS installer under `src-tauri\target\release\bundle\nsis\`.
 
 - **Unsigned:** SmartScreen may warn on first run.
 - Requires [MSVC Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/), WebView2 (usually preinstalled on Windows 10/11), and Rust.
-- Stage into `releases\`: `.\scripts\release.ps1`
+- Stage NSIS into `releases\`: `.\scripts\release.ps1`
+
+#### Share a standalone zip (no git / npm for the recipient)
+
+For handing the app to someone on Windows (no paid signing cert needed — SmartScreen may still warn once):
+
+```powershell
+.\scripts\pack_windows_portable.ps1
+```
+
+Creates `releases\FocalPointAligner-portable-vX.Y.Z\` and a matching `.zip` that includes:
+
+- the Tauri `.exe`
+- the Python API + core modules
+- a Windows `venv` with dependencies
+
+They unzip, double-click **Start.bat**, and run. Video still needs **ffmpeg** on their PATH. Build this pack **on Windows** (native PowerShell), not under WSL.
 
 There is no PyQt / PyInstaller app path anymore.
 

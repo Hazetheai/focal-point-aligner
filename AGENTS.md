@@ -33,9 +33,10 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 - Bundle targets: macOS `app` + Windows `nsis` in `src-tauri/tauri.conf.json`
 - macOS: `./build_macos.sh` / `npm run build` → `src-tauri/target/release/bundle/macos/Focal Point Aligner.app`
 - Windows: `.\scripts\build_windows.ps1` → `src-tauri\target\release\bundle\nsis\`
+- Windows **portable zip** (exe + Python sources + venv for a collaborator): `.\scripts\pack_windows_portable.ps1` → `releases/FocalPointAligner-portable-v*.zip` (build on native Windows; no signing cert required)
 - `./scripts/open-app.sh` / `.\scripts\open-app.ps1` set `FPA_ROOT` and open the built app
 - First open: macOS Finder → right-click → **Open** (Gatekeeper); Windows may show SmartScreen (unsigned)
-- The shell embeds the web UI and spawns project venv Python `-m api.app` (needs this checkout + venv, or `FPA_ROOT` / `FPA_PYTHON`)
+- Dev/checkout shell embeds the web UI and spawns project venv Python `-m api.app` (needs this checkout + venv, or `FPA_ROOT` / `FPA_PYTHON`); portable zip embeds its own `venv` next to the exe
 - User docs: `docs/user/` bundled as Tauri resources; native **Help** menu emits `open-docs`; `web/src/Help.jsx` viewer (+ Help button in browser)
 - Dev shell: `npm run desktop`
 
@@ -111,6 +112,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 | `scripts/release.ps1` | Local unsigned Windows NSIS copy into `releases/` |
 | `build_macos.sh` | Unsigned Tauri macOS build |
 | `scripts/build_windows.ps1` | Unsigned Tauri Windows NSIS build |
+| `scripts/pack_windows_portable.ps1` | Portable zip: exe + Python + venv for sharing |
 | `docs/user/` | End-user Help guides (Tauri resources + `web/public/docs/user`) |
 | `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, import, arrange, dialogs |
 | `web/src/Opener.jsx` | Single / Batch / Import, size presets, merge/move, import naming pattern |

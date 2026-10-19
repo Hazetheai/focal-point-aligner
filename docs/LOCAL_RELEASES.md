@@ -63,8 +63,19 @@ use `./scripts/release.sh --bump` on macOS (or edit `package.json` /
 `src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` by hand) before running
 `release.ps1`.
 
-SmartScreen may warn on first run (unsigned). The app still needs this checkout
-+ `.\venv`, or `FPA_ROOT` / `FPA_PYTHON`.
+SmartScreen may warn on first run (unsigned). The bare NSIS/exe still needs this
+checkout + `.\venv`, or `FPA_ROOT` / `FPA_PYTHON`.
+
+### Portable zip for a collaborator (recommended for sharing)
+
+No signing license. Includes exe + Python modules + a local `venv`:
+
+```powershell
+.\scripts\pack_windows_portable.ps1
+```
+
+Send `releases\FocalPointAligner-portable-vX.Y.Z.zip`. Recipient unzips and runs
+**Start.bat**. They do not need git or npm. Video still needs ffmpeg on PATH.
 
 ## Later (optional)
 

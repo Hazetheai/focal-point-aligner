@@ -48,6 +48,8 @@ First Gatekeeper open: Finder → right-click → **Open**.
 
 Output is an unsigned NSIS installer under `src-tauri\target\release\bundle\nsis\`. SmartScreen may warn on first run; that is expected for unsigned builds.
 
+**Standalone zip for someone else (no repo needed):** on a Windows machine with the full toolchain, run `.\scripts\pack_windows_portable.ps1` and send the zip from `releases\`. They unzip and run **Start.bat**. No code-signing license required.
+
 ## Environment overrides
 
 | Variable | Purpose |
