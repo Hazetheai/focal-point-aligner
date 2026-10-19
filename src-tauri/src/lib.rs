@@ -125,12 +125,54 @@ fn spawn_api() -> Result<Child, String> {
         py.display(),
         root.display()
     );
-    Command::new(py)
-        .current_dir(&root)
+
+    let mut cmd = Command::new(&py);
+    cmd.current_dir(&root)
         .args(["-m", "api.app"])
-        .env("FPA_API_PORT", "8765")
-        .spawn()
+        .env("FPA_API_PORT", "8765");
+
+    // python.exe is a console program. From this windowed app, Windows would
+    // open a command prompt for it. Hide that window and keep the API log.
+    #[cfg(windows)]
+    hide_windows_console(&root, &py, &mut cmd)?;
+
+    cmd.spawn()
         .map_err(|e| format!("failed to start API: {e}"))
+}
+
+#[cfg(windows)]
+fn hide_windows_console(root: &Path, py: &Path, cmd: &mut Command) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::windows::process::CommandExt;
+    use std::process::Stdio;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let log_path = root.join("fpa-api.log");
+    let mut log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("failed to open {}: {e}", log_path.display()))?;
+    writeln!(
+        log_file,
+        "\n--- Starting API with {} in {} ---",
+        py.display(),
+        root.display()
+    )
+    .map_err(|e| format!("failed to write {}: {e}", log_path.display()))?;
+    log_file
+        .flush()
+        .map_err(|e| format!("failed to write {}: {e}", log_path.display()))?;
+    let log_err = log_file
+        .try_clone()
+        .map_err(|e| format!("failed to open {}: {e}", log_path.display()))?;
+
+    cmd.stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_err))
+        .env("PYTHONUNBUFFERED", "1")
+        .creation_flags(CREATE_NO_WINDOW);
+    Ok(())
 }
 
 /// Allowed doc basenames (no path separators).
