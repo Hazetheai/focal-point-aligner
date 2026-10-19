@@ -6,11 +6,11 @@ Guidance for AI agents (or humans) working on this project. Read this before mak
 
 **Focal Point Aligner** — click a focal point on each photo (or video work-frame) in a folder; export aligned JPEGs / MP4s at a shared target size with that point centered.
 
-Current GUI: **React (Vite) + FastAPI**, with an optional **Tauri** macOS `.app` shell. There is no PyQt GUI.
+Current GUI: **React (Vite) + FastAPI**, with an optional **Tauri** desktop shell (macOS `.app` / Windows NSIS). There is no PyQt GUI.
 
 Workflow:
 
-1. Opener: Single / Batch / **Import** → target size (ratio + resolution presets, or manual W×H) → Start. Import pastes URLs or picks `.txt` / folder-of-lists, downloads into a batch root, then continues as Batch (align → Merge / Move aligned). Header **theme** toggle (light / dark / system) via `web/src/theme.js` (`data-theme` + `fpa-theme` in localStorage).
+1. Opener: Single / Batch / **Import** → target size (ratio + resolution presets, or manual W×H) → Start. Import pastes URLs or picks `.txt` / folder-of-lists, downloads into a batch root, then continues as Batch (align → Merge / Move aligned). Header **theme** toggle (light / dark / system) via `web/src/theme.js` (`data-theme` + `fpa-theme` in localStorage). **Help** opens the in-app guide (`docs/user/`; native Help menu in the Tauri shell).
 2. **Original**: click/drag focal; wheel resizes crop box; Enter / double-click saves and advances; **X** / **Shift+middle-click** discards. Stage background is a **theme-aware checkerboard** (light tiles in light mode, dark in dark). Header can change target size mid-session (live crop/preview retarget). Action-bar **Duplicate** is right-aligned. For **videos**, a scrubber under the stage sets work/in/out frames; **Shift+click** the track (between In/Out) adds a **keyframe** at the current focal+crop_scale; click a diamond marker for ease (linear / ease-in / ease-out / ease-in-out) or Delete; drag markers to retime. Focal moves write the keyframe at the playhead. **Del** clears all keyframes (and the focal) for that clip (destructive hotkey styling).
 3. **Preview**: aligned crop of the **same** `current_idx`. Drag to pan focal; middle-drag / wheel / Zoom ± to change `crop_scale`; **Flip X** (upside down) / **Flip Y** (left ↔ right) icon toggles (draft dirty includes flips; pan deltas negate under flips); neighbor Overlay (±0.1 opacity, clamped when no neighbor) is **screen-centered** in the toolbar (grid `1fr auto 1fr`); Compare (C) + Commit (**Enter** when draft is dirty and not comparing). For videos: **Play** / **Space** loops the trim with interpolated keyframes; a right-aligned **Keyframes** action-bar popover (same row as Size / Guides / Details) shows `selected/total` and selects by ordinal (1…N); progress shows `i/N` of the trimmed span. Toolbar is one row of compact icon buttons (tooltips on hover): left Compare/Commit/flips/Zoom · center Overlay · right Play/Wrap.
 4. **Arrange**: one toolbar row — Original/Aligned + Reverse + slots 0–6 + Zoom. AutoArrange Color/Depth/Lead/Faces icons live on the action bar with an Info popover; progress floats above that cluster. Drag thumbnails to reorder; video thumbs show a small ▶ badge; Reverse toggles order in the active slot (button stays lit while reversed); hotkeys `0`–`6` recall slots; Manual DnD commits to a slot when leaving Arrange.
@@ -24,16 +24,19 @@ Workflow:
 npm run dev
 ```
 
-(`./dev.sh` is the same.) Creates `./venv` if needed, installs Python + `web/` deps, starts FastAPI on **8765**, Vite on **5173**, opens the browser. Requires Node.js and Python 3.
+(`npm run dev` → `scripts/run-dev.mjs` → `dev.sh` on Unix / `dev.ps1` on native Windows.) Creates `./venv` if needed, installs Python + `web/` deps, starts FastAPI on **8765**, Vite on **5173**, opens the browser. Requires Node.js and Python 3. Windows desktop/dev should use PowerShell, not WSL.
 
 Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/folder`, or Tauri when running as a desktop shell). Import can also pick a `.txt` via `POST /dialog/file`. In batch mode, Browse + Refresh load the subfolder queue; Merge / Move aligned / Start Batch use that queue.
 
 ## Desktop (unsigned Tauri)
 
-- `./build_macos.sh` / `npm run build` → `src-tauri/target/release/bundle/macos/Focal Point Aligner.app`
-- `./scripts/open-app.sh` sets `FPA_ROOT` to the repo and opens the `.app`
-- First open: Finder → right-click → **Open** (Gatekeeper; unsigned)
-- The `.app` embeds the web UI and spawns `./venv/bin/python -m api.app` (needs this checkout + venv, or `FPA_ROOT` / `FPA_PYTHON`)
+- Bundle targets: macOS `app` + Windows `nsis` in `src-tauri/tauri.conf.json`
+- macOS: `./build_macos.sh` / `npm run build` → `src-tauri/target/release/bundle/macos/Focal Point Aligner.app`
+- Windows: `.\scripts\build_windows.ps1` → `src-tauri\target\release\bundle\nsis\`
+- `./scripts/open-app.sh` / `.\scripts\open-app.ps1` set `FPA_ROOT` and open the built app
+- First open: macOS Finder → right-click → **Open** (Gatekeeper); Windows may show SmartScreen (unsigned)
+- The shell embeds the web UI and spawns project venv Python `-m api.app` (needs this checkout + venv, or `FPA_ROOT` / `FPA_PYTHON`)
+- User docs: `docs/user/` bundled as Tauri resources; native **Help** menu emits `open-docs`; `web/src/Help.jsx` viewer (+ Help button in browser)
 - Dev shell: `npm run desktop`
 
 ## Size presets & live retarget
@@ -101,13 +104,18 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 
 | Path | Role |
 |------|------|
-| `scripts/dev.sh` | GUI launcher used by `npm run dev` |
-| `scripts/open-app.sh` | Open latest local release `.app` with `FPA_ROOT` |
-| `scripts/release.sh` | Local unsigned release into `releases/` |
-| `build_macos.sh` | Unsigned Tauri build |
+| `scripts/dev.sh` / `dev.ps1` / `run-dev.mjs` | GUI launcher used by `npm run dev` (Unix / Windows) |
+| `scripts/open-app.sh` | Open latest local macOS release `.app` with `FPA_ROOT` |
+| `scripts/open-app.ps1` | Open latest Windows release exe with `FPA_ROOT` |
+| `scripts/release.sh` | Local unsigned macOS release into `releases/` |
+| `scripts/release.ps1` | Local unsigned Windows NSIS copy into `releases/` |
+| `build_macos.sh` | Unsigned Tauri macOS build |
+| `scripts/build_windows.ps1` | Unsigned Tauri Windows NSIS build |
+| `docs/user/` | End-user Help guides (Tauri resources + `web/public/docs/user`) |
 | `api/app.py` | FastAPI: session, focals, navigate, discard, order, export SSE, media, batch/merge, import, arrange, dialogs |
 | `web/src/Opener.jsx` | Single / Batch / Import, size presets, merge/move, import naming pattern |
 | `web/src/Aligner.jsx` | Original / Preview / Arrange, AutoArrange, slots, nav dots, hotkeys |
+| `web/src/Help.jsx` | In-app Help viewer (markdown from docs/user) |
 | `web/src/theme.js` | Light / dark / system theme preference |
 | `web/src/crop.js` | JS port of `compute_crop` / `compute_crop_frame` + keyframe ease/lerp |
 | `web/src/presets.js` | Target size ratio + resolution presets |
@@ -116,7 +124,7 @@ Opener **Browse** buttons open a native **folder** picker (via `POST /dialog/fol
 | `aligner_core.py` | **UI-free core** — state, persistence, crop, discard, reorder, export |
 | `batch.py` | **UI-free batch** — discovery, done-detection, `merge_folders()`, `move_aligned_outputs()` |
 | `cli.py` / `focalpoint` | CLI over the core |
-| `src-tauri/` | Tauri 2 shell (spawns FastAPI from project venv) |
+| `src-tauri/` | Tauri 2 shell (macOS + Windows; spawns FastAPI from project venv) |
 
 ## Core state (`FocalPointAlignerCore`)
 
@@ -209,13 +217,14 @@ Mouse on Preview: left-drag pan focal · middle-drag or wheel zoom · Flip X (up
 
 - Dev GUI: `npm run dev`
 - Tauri window: `npm run desktop`
-- Tauri build (unsigned): `./build_macos.sh` or `npm run build`
+- Tauri build (unsigned): macOS `./build_macos.sh` / `npm run build`; Windows `.\scripts\build_windows.ps1`
 - Local release pipeline (artifacts in gitignored `releases/`, no remote publish):
-  - Once: `./scripts/install-git-hooks.sh` and keep a local `release` branch
-  - Ship: `git checkout release && git merge main` (post-merge runs `scripts/release.sh`)
+  - Once (macOS): `./scripts/install-git-hooks.sh` and keep a local `release` branch
+  - Ship macOS: `git checkout release && git merge main` (post-merge runs `scripts/release.sh`)
   - Or: `npm run release` / `./scripts/release.sh [--bump patch]`
-  - Open: `./scripts/open-app.sh` (prefers `releases/latest`)
-  - Docs: `docs/LOCAL_RELEASES.md`
+  - Ship Windows: `.\scripts\release.ps1`
+  - Open: `./scripts/open-app.sh` or `.\scripts\open-app.ps1` (prefers `releases/latest`)
+  - Docs: `docs/LOCAL_RELEASES.md`; end-user Help: `docs/user/`
 
 ## Conventions
 

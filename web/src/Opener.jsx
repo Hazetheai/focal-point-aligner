@@ -40,7 +40,7 @@ function SizePresets({ width, height, onChange }) {
   )
 }
 
-export default function Opener({ onStart, onBatchSession }) {
+export default function Opener({ onStart, onBatchSession, theme = 'dark', onToggleTheme, onOpenHelp }) {
   const [mode, setMode] = useState('single')
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
@@ -375,8 +375,30 @@ export default function Opener({ onStart, onBatchSession }) {
 
   return (
     <div className="screen" ref={dropRef} onDragOver={(e) => e.preventDefault()} onDrop={onDrop}>
-      <h1>Focal Point Aligner</h1>
-      <p className="muted">Pick a local folder, import URL lists, then align. Browse opens a folder picker.</p>
+      <div className="opener-header">
+        <div>
+          <h1>Focal Point Aligner</h1>
+          <p className="muted">Pick a local folder, import URL lists, then align. Browse opens a folder picker.</p>
+        </div>
+        <div className="opener-header-actions">
+          <button
+            type="button"
+            className="secondary"
+            title="Help"
+            onClick={() => onOpenHelp?.('README.md')}
+          >
+            Help
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            onClick={() => onToggleTheme?.()}
+          >
+            {theme === 'dark' ? 'Light' : 'Dark'}
+          </button>
+        </div>
+      </div>
 
       <div className="row">
         <button className={mode === 'single' ? '' : 'secondary'} onClick={() => setMode('single')}>Single</button>

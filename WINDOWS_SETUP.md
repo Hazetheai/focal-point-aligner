@@ -1,39 +1,22 @@
 # Windows / cross-platform setup
 
-The supported GUI is **React + FastAPI** (`npm run dev`). On macOS you can also build an unsigned Tauri `.app` (`./build_macos.sh`). There is no PyQt desktop app.
+Use **native Windows PowerShell** (not WSL) for both `npm run dev` and the Tauri NSIS build. Full details: **[README.md](README.md)**.
 
-## Requirements
+## Quick start (dev UI)
 
-- **Python 3.10+**
-- **Node.js 18+** (npm)
-- Git
+1. Install **Git**, **Node.js 18+**, **Python 3.10+** (check “Add python.exe to PATH”), and **ffmpeg** on PATH for video.
+2. Clone the repo, open PowerShell in the repo root.
+3. `npm install` then `npm run dev` (runs `scripts/dev.ps1`).
 
-## Setup
+## Desktop (unsigned NSIS)
 
-```bat
-cd FocalPointAligner
-python -m venv venv
-venv\Scripts\pip install -r requirements.txt
-npm install
-npm --prefix web install
+Also need **Rust**, **MSVC Build Tools** (C++ workload), and **WebView2** (usually already on Win10/11).
+
+```powershell
+.\scripts\build_windows.ps1
+.\scripts\open-app.ps1
 ```
 
-## Run the GUI
+The `.exe` / installer still needs this checkout + `.\venv` (or `FPA_ROOT` / `FPA_PYTHON`).
 
-```bat
-npm run dev
-```
-
-Opens the browser UI (Vite) and starts the API on port **8765**.
-
-## CLI
-
-```bat
-venv\Scripts\python cli.py init --input C:\path\to\images --output C:\path\to\output
-```
-
-## Troubleshooting
-
-- **API not reachable:** confirm nothing else is bound to `8765`, and that `venv\Scripts\python -m api.app` starts cleanly.
-- **Missing packages:** `venv\Scripts\pip install -r requirements.txt`
-- **Tauri desktop:** macOS-oriented in this repo (`npm run build` / `./build_macos.sh`). Windows Tauri packaging is possible later but not documented as the primary path here.
+End-user Help: [`docs/user/`](docs/user/).

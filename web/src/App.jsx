@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import Opener from './Opener.jsx'
 import Aligner from './Aligner.jsx'
-import { api } from './api.js'
+import Help from './Help.jsx'
+import { api, isTauriApp } from './api.js'
 import { initTheme, resolveTheme, toggleTheme as flipTheme } from './theme.js'
 
 export default function App() {
@@ -9,11 +10,39 @@ export default function App() {
   const [session, setSession] = useState(null)
   const [batchMode, setBatchMode] = useState(false)
   const [theme, setTheme] = useState(() => resolveTheme())
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [helpPage, setHelpPage] = useState('README.md')
 
   useEffect(() => initTheme(), [])
 
+  useEffect(() => {
+    if (!isTauriApp()) return undefined
+    let cancelled = false
+    let unlisten = null
+    import('@tauri-apps/api/event')
+      .then(({ listen }) => listen('open-docs', (ev) => {
+        const page = ev?.payload?.page || 'README.md'
+        setHelpPage(page)
+        setHelpOpen(true)
+      }))
+      .then((fn) => {
+        if (cancelled) fn()
+        else unlisten = fn
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+      if (typeof unlisten === 'function') unlisten()
+    }
+  }, [])
+
   function toggleTheme() {
     setTheme(flipTheme())
+  }
+
+  function openHelp(page = 'README.md') {
+    setHelpPage(page)
+    setHelpOpen(true)
   }
 
   async function finish() {
@@ -41,6 +70,7 @@ export default function App() {
         <Opener
           theme={theme}
           onToggleTheme={toggleTheme}
+          onOpenHelp={openHelp}
           onStart={(s) => { setBatchMode(false); setSession(s); setScreen('aligner') }}
           onBatchSession={(s) => { setBatchMode(true); setSession(s); setScreen('aligner') }}
         />
@@ -53,8 +83,15 @@ export default function App() {
           onFinished={finish}
           theme={theme}
           onToggleTheme={toggleTheme}
+          onOpenHelp={openHelp}
         />
       )}
+      <Help
+        open={helpOpen}
+        page={helpPage}
+        onClose={() => setHelpOpen(false)}
+        onNavigate={(page) => setHelpPage(page)}
+      />
     </div>
   )
 }

@@ -1,16 +1,16 @@
 # Local releases (gitignored)
 
-Unsigned macOS `.app` builds stay on this machine under `releases/`. Nothing is
-uploaded to GitHub or Apple.
+Unsigned desktop builds stay on this machine under `releases/`. Nothing is
+uploaded to GitHub, Apple, or Microsoft.
 
-## One-time setup
+## One-time setup (macOS release branch)
 
 ```bash
 ./scripts/install-git-hooks.sh
 git branch release   # once; tracks what you ship locally
 ```
 
-## Ship a build
+## Ship a macOS build
 
 From any feature work already on `main`:
 
@@ -39,7 +39,7 @@ Or release manually anytime:
 ./scripts/release.sh --bump patch   # bump package + tauri version, commit, then build
 ```
 
-## Open the latest local release
+Open:
 
 ```bash
 ./scripts/open-app.sh
@@ -48,7 +48,25 @@ Or release manually anytime:
 First Gatekeeper open: Finder → right-click the `.app` → **Open**.
 The app still needs this checkout + `./venv`.
 
+## Ship a Windows build
+
+On a Windows machine with MSVC Build Tools, WebView2, Rust, Node, and Python:
+
+```powershell
+.\scripts\release.ps1
+.\scripts\open-app.ps1
+```
+
+This builds the unsigned NSIS installer (`.\scripts\build_windows.ps1`), copies it
+into `releases\vX.Y.Z\`, and updates `releases\latest`. Version bumps can still
+use `./scripts/release.sh --bump` on macOS (or edit `package.json` /
+`src-tauri/tauri.conf.json` / `src-tauri/Cargo.toml` by hand) before running
+`release.ps1`.
+
+SmartScreen may warn on first run (unsigned). The app still needs this checkout
++ `.\venv`, or `FPA_ROOT` / `FPA_PYTHON`.
+
 ## Later (optional)
 
 When you want shared/CI releases, add a remote workflow that publishes the same
-artifact; keep this local path until then.
+artifacts; keep this local path until then.

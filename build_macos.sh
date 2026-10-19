@@ -17,6 +17,10 @@ if [ ! -d node_modules ]; then
   npm install
 fi
 
+# Keep Vite public docs in sync with canonical docs/user
+mkdir -p web/public/docs/user
+cp -f docs/user/*.md web/public/docs/user/
+
 # shellcheck disable=SC1090
 source "$HOME/.cargo/env" 2>/dev/null || true
 npm run build

@@ -2588,7 +2588,16 @@ function PreviewStage({
   )
 }
 
-export default function Aligner({ session, setSession, batchMode, onFinished, theme = 'dark', onToggleTheme }) {
+function IconHelp() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.35" />
+      <path d="M6.2 6.2a1.9 1.9 0 1 1 2.6 1.7c-.55.3-.9.7-.9 1.35M8 11.6v.2" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+export default function Aligner({ session, setSession, batchMode, onFinished, theme = 'dark', onToggleTheme, onOpenHelp }) {
   const [tab, setTab] = useState('original')
   const [pending, setPending] = useState(null)
   const [exportOpen, setExportOpen] = useState(false)
@@ -3232,6 +3241,12 @@ export default function Aligner({ session, setSession, batchMode, onFinished, th
           <button aria-selected={tab === 'arrange'} onClick={() => switchTab('arrange')}>Arrange</button>
         </div>
         <div className="row header-actions">
+          <IconBtn
+            icon={<IconHelp />}
+            title="Help"
+            label="Help"
+            onClick={() => onOpenHelp?.('README.md')}
+          />
           <IconBtn
             icon={theme === 'dark' ? <IconSun /> : <IconMoon />}
             title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}

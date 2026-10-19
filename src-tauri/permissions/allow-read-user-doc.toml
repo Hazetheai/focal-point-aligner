@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-read-user-doc"
+description = "Allows reading bundled user-guide markdown files"
+commands.allow = ["read_user_doc"]

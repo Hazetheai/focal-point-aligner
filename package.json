@@ -3,11 +3,11 @@
   "private": true,
   "version": "0.3.0",
   "scripts": {
-    "dev": "bash scripts/dev.sh",
+    "dev": "node scripts/run-dev.mjs",
     "desktop": "tauri dev",
     "build": "tauri build",
     "release": "bash scripts/release.sh",
-    "web": "bash scripts/dev.sh"
+    "web": "node scripts/run-dev.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
